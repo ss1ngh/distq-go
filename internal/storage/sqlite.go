@@ -4,6 +4,7 @@ import(
 	"context"
 	"fmt"
 	"database/sql"
+	"errors"
 
 	_ "modernc.org/sqlite"
 	"github.com/ss1ngh/distq-go/internal/job"
@@ -11,6 +12,21 @@ import(
 
 type SQLiteStore struct{
 	db *sql.DB
+}
+
+func stateToString(s job.State) string {
+	switch s {
+	case job.Pending:
+		return "pending"
+	case job.Processing:
+		return "processing"
+	case job.Done:
+		return "done"
+	case job.Failed:
+		return "failed"
+	default:
+		return "pending"
+	}
 }
 
 func NewSQLiteStore(path string) (*SQLiteStore, error){
@@ -47,18 +63,61 @@ func NewSQLiteStore(path string) (*SQLiteStore, error){
 func (s *SQLiteStore) CreateJob(ctx context.Context, j *job.Job) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs (id, type, payload, state, max_retries, retry_count, last_error, created_at) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, j.Type, j.Payload, "pending", j.MaxRetries, j.RetryCount, j.LastError, j.CreatedAt)
+		j.ID, j.Type, j.Payload, stateToString(j.state), j.MaxRetries, j.RetryCount, j.LastError, j.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
 	return nil
 }
 
+func (s *SQLiteStore) DequeueJob(ctx context.Context) (*job.Job, error) {
+	query := `
+			UPDATE jobs
+			SET state = 'processing', started_at = CURRENT_TIMESTAMP
+			WHERE id = (
+				SELECT id FROM jobs
+				WHERE state = 'pending'
+				LIMIT 1
+			)
+			RETURNING id, type, payload, state, max_retries, retry_count, last_error, created_at;`
+
+	j := &job.Job{}
+	var stateStr string	
+
+	err := s.db.QueryRowContext(ctx, query).Scan(
+		&j.ID,
+		&j.Type,
+		&j.Payload,
+		&stateStr,
+		&j.MaxRetries,
+		&j.RetryCount,
+		&j.LastError,
+		&j.CreatedAt
+	)
+
+	if err != nil{
+		if errors.Is(err, sql.ErrNoRows){
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("dequeue job: %w", err)
+	}
+
+	j.State = jobStateFromString(stateStr)
+
+	return j, nil
+
+}
+
 func(s *SQLiteStore) MarkProcessing(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET state = 'processing', started_at= CURRENT_TIMESTAMP WHERE id = ?`, id)
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state = 'processing', started_at= CURRENT_TIMESTAMP WHERE id = ? AND state='pending'` , id)
 
 	if err != nil {
 		return fmt.Errorf("mark processing : %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n != 1 {
+		return errors.New("job already claimed")
 	}
 	return nil
 }

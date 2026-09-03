@@ -24,13 +24,19 @@ func main() {
 	//create queue
 	q, err := queue.New(queue.Options{BufferSize:100, Store: store})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create queue: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to create a queue: %v\n", err)
 		os.Exit(1)
 	}
 
-	//create a context that cancels when ctrl+c  is passed
+	//recover jobs
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	//recover jobs left over from previous crash/restart
+	if err := q.Recover(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to recover: %v\n", err)
+		os.Exit(1)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -43,17 +49,17 @@ func main() {
 	//start a worker goroutine that processes jobs until shutdown.
 	go func() {
 		for {
-			job, err := q.Dequeue(ctx)
+			j, err := q.Dequeue(ctx)
 			if err != nil {
 				//context was cancelled — stop working.
 				return
 			}
-			fmt.Printf("processing job %s (type: %s)\n", job.ID[:8], job.Type)
+			fmt.Printf("processing job %s (type: %s)\n", j.ID[:8], j.Type)
 			time.Sleep(500 * time.Millisecond) // pretend to work
-			if err := q.Ack(job.ID); err != nil {
-				fmt.Printf("ack failed for %s: %v\n", job.ID[:8], err)
+			if err := q.Ack(j.ID); err != nil {
+				fmt.Printf("ack failed for %s: %v\n", j.ID[:8], err)
 			}
-			fmt.Printf("job %s done\n", job.ID[:8])
+			fmt.Printf("job %s done\n", j.ID[:8])
 		}
 	}()
 
