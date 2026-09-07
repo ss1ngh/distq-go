@@ -1,6 +1,6 @@
 package storage
 
-import(
+import (
 	"context"
 
 	"github.com/ss1ngh/distq-go/internal/job"
@@ -8,6 +8,7 @@ import(
 
 type Store interface {
 	CreateJob(ctx context.Context, j *job.Job) error
+	DequeueJob(ctx context.Context) (*job.Job, error)
 	MarkProcessing(ctx context.Context, id string) error
 	MarkDone(ctx context.Context, id string) error
 	MarkFailed(ctx context.Context, id string, errMsg string) error

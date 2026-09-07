@@ -1,6 +1,6 @@
 package main
 
-import(
+import (
 	"context"
 	"fmt"
 	"os"
@@ -11,6 +11,7 @@ import(
 	"github.com/ss1ngh/distq-go/internal/job"
 	"github.com/ss1ngh/distq-go/internal/queue"
 	"github.com/ss1ngh/distq-go/internal/storage"
+	"github.com/ss1ngh/distq-go/internal/worker"
 )
 
 func main() {
@@ -22,7 +23,7 @@ func main() {
 	defer store.Close()
 
 	//create queue
-	q, err := queue.New(queue.Options{BufferSize:100, Store: store})
+	q, err := queue.New(queue.Options{Store: store})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create a queue: %v\n", err)
 		os.Exit(1)
@@ -32,12 +33,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	//recover jobs left over from previous crash/restart
-	if err := q.Recover(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to recover: %v\n", err)
-		os.Exit(1)
-	}
-
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -46,22 +41,13 @@ func main() {
 		cancel()
 	}()
 
-	//start a worker goroutine that processes jobs until shutdown.
-	go func() {
-		for {
-			j, err := q.Dequeue(ctx)
-			if err != nil {
-				//context was cancelled — stop working.
-				return
-			}
-			fmt.Printf("processing job %s (type: %s)\n", j.ID[:8], j.Type)
-			time.Sleep(500 * time.Millisecond) // pretend to work
-			if err := q.Ack(j.ID); err != nil {
-				fmt.Printf("ack failed for %s: %v\n", j.ID[:8], err)
-			}
-			fmt.Printf("job %s done\n", j.ID[:8])
-		}
-	}()
+	w := worker.New(q, func(ctx context.Context, j *job.Job) error {
+		fmt.Printf("processing job %s (type : %s)\n", j.ID[:8], j.Type)
+		time.Sleep(500 * time.Millisecond)
+		return nil
+	})
+
+	go w.Start(ctx)
 
 	//enqueue 10 jobs.
 	for i := 0; i < 10; i++ {
@@ -75,12 +61,4 @@ func main() {
 
 	//wait a bit for the worker to finish all jobs.
 	time.Sleep(5 * time.Second)
-
-	//shut down gracefully — wait up to 5s for in-flight jobs.
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
-	if err := q.Shutdown(shutdownCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "shutdown error: %v\n", err)
-	}
-	fmt.Println("queue shut down cleanly")
 }

@@ -1,16 +1,16 @@
 package storage
 
-import(
+import (
 	"context"
-	"fmt"
 	"database/sql"
 	"errors"
+	"fmt"
 
-	_ "modernc.org/sqlite"
 	"github.com/ss1ngh/distq-go/internal/job"
+	_ "modernc.org/sqlite"
 )
 
-type SQLiteStore struct{
+type SQLiteStore struct {
 	db *sql.DB
 }
 
@@ -29,7 +29,7 @@ func stateToString(s job.State) string {
 	}
 }
 
-func NewSQLiteStore(path string) (*SQLiteStore, error){
+func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -50,20 +50,19 @@ func NewSQLiteStore(path string) (*SQLiteStore, error){
 		done_at DATETIME
 	);`
 
-	if _,err := db.Exec(schema); err != nil{
+	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	return &SQLiteStore{db : db}, nil
+	return &SQLiteStore{db: db}, nil
 }
 
-
-//creates new jobs
+// creates new jobs
 func (s *SQLiteStore) CreateJob(ctx context.Context, j *job.Job) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO jobs (id, type, payload, state, max_retries, retry_count, last_error, created_at) 
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		j.ID, j.Type, j.Payload, stateToString(j.state), j.MaxRetries, j.RetryCount, j.LastError, j.CreatedAt)
+		j.ID, j.Type, j.Payload, stateToString(j.State), j.MaxRetries, j.RetryCount, j.LastError, j.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
@@ -82,7 +81,7 @@ func (s *SQLiteStore) DequeueJob(ctx context.Context) (*job.Job, error) {
 			RETURNING id, type, payload, state, max_retries, retry_count, last_error, created_at;`
 
 	j := &job.Job{}
-	var stateStr string	
+	var stateStr string
 
 	err := s.db.QueryRowContext(ctx, query).Scan(
 		&j.ID,
@@ -92,11 +91,11 @@ func (s *SQLiteStore) DequeueJob(ctx context.Context) (*job.Job, error) {
 		&j.MaxRetries,
 		&j.RetryCount,
 		&j.LastError,
-		&j.CreatedAt
+		&j.CreatedAt,
 	)
 
-	if err != nil{
-		if errors.Is(err, sql.ErrNoRows){
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 
@@ -109,8 +108,8 @@ func (s *SQLiteStore) DequeueJob(ctx context.Context) (*job.Job, error) {
 
 }
 
-func(s *SQLiteStore) MarkProcessing(ctx context.Context, id string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state = 'processing', started_at= CURRENT_TIMESTAMP WHERE id = ? AND state='pending'` , id)
+func (s *SQLiteStore) MarkProcessing(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE jobs SET state = 'processing', started_at= CURRENT_TIMESTAMP WHERE id = ? AND state='pending'`, id)
 
 	if err != nil {
 		return fmt.Errorf("mark processing : %w", err)
@@ -125,15 +124,15 @@ func(s *SQLiteStore) MarkProcessing(ctx context.Context, id string) error {
 func (s *SQLiteStore) MarkDone(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET state = 'done', done_at= CURRENT_TIMESTAMP WHERE id=?`, id)
 
-	if err!= nil {
+	if err != nil {
 		return fmt.Errorf("mark done : %w", err)
 	}
 	return nil
 }
 
 func (s *SQLiteStore) MarkFailed(ctx context.Context, id string, errMsg string) error {
-	_, err := s.db.ExecContext(ctx,`UPDATE jobs SET state = 'failed', last_error = ?, done_at = CURRENT_TIMESTAMP WHERE id = ?`, errMsg, id)
-	
+	_, err := s.db.ExecContext(ctx, `UPDATE jobs SET state = 'failed', last_error = ?, done_at = CURRENT_TIMESTAMP WHERE id = ?`, errMsg, id)
+
 	if err != nil {
 		return fmt.Errorf("mark failed: %w", err)
 	}
@@ -149,12 +148,12 @@ func (s *SQLiteStore) MarkPending(ctx context.Context, id string) error {
 	return nil
 }
 
-//run at startup to get recover after a crash/restart
+// run at startup to get recover after a crash/restart
 func (s *SQLiteStore) GetPendingJobs(ctx context.Context) ([]*job.Job, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, type, payload, state, max_retries, retry_count, last_error, created_at
 		 FROM jobs WHERE state IN ('pending', 'processing')`)
-		 
+
 	if err != nil {
 		return nil, fmt.Errorf("query pending jobs: %w", err)
 	}
@@ -177,11 +176,10 @@ func (s *SQLiteStore) GetPendingJobs(ctx context.Context) ([]*job.Job, error) {
 	return jobs, nil
 }
 
-//release db file connection
+// release db file connection
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
-
 
 func jobStateFromString(s string) job.State {
 	switch s {
