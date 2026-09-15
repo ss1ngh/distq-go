@@ -6,59 +6,51 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/ss1ngh/distq-go/internal/job"
 	"github.com/ss1ngh/distq-go/internal/queue"
+	"github.com/ss1ngh/distq-go/internal/server"
 	"github.com/ss1ngh/distq-go/internal/storage"
-	"github.com/ss1ngh/distq-go/internal/worker"
 )
 
 func main() {
+	//initialize the storage layer
 	store, err := storage.NewSQLiteStore("distq.db")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open storage: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to open db: %v\n", err)
 		os.Exit(1)
 	}
 	defer store.Close()
 
-	//create queue
+	//initialize the queue bridge
 	q, err := queue.New(queue.Options{Store: store})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create a queue: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to create queue: %v\n", err)
 		os.Exit(1)
 	}
 
-	//recover jobs
+	//set up global context for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	//initialize and start TCP server
+	srv := server.New(":4040", q)
+
 	go func() {
-		<-sigCh
-		fmt.Println("\nreceived interrupt, shutting down...")
-		cancel()
+		if err := srv.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		}
 	}()
 
-	w := worker.New(q, func(ctx context.Context, j *job.Job) error {
-		fmt.Printf("processing job %s (type : %s)\n", j.ID[:8], j.Type)
-		time.Sleep(500 * time.Millisecond)
-		return nil
-	})
+	//block the main thread until an OS interrupt (Ctrl+C)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
 
-	go w.Start(ctx)
+	fmt.Println("\nShutdown signal received...")
 
-	//enqueue 10 jobs.
-	for i := 0; i < 10; i++ {
-		j := job.NewJob("demo", []byte(fmt.Sprintf(`{"num":%d}`, i)))
-		if err := q.Enqueue(ctx, j); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to enqueue: %v\n", err)
-			break
-		}
-		fmt.Printf("enqueued job %s\n", j.ID[:8])
-	}
+	//cancel context (stops listener) and wait for active jobs to finish
+	cancel()
+	srv.Stop()
 
-	//wait a bit for the worker to finish all jobs.
-	time.Sleep(5 * time.Second)
+	fmt.Println("System shutdown complete.")
 }
