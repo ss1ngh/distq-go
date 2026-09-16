@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/ss1ngh/distq-go/internal/protocol"
 	"github.com/ss1ngh/distq-go/internal/queue"
 )
@@ -17,7 +18,7 @@ type Server struct {
 	addr string //network address
 	q    *queue.Queue
 	ln   net.Listener //active tcp socket for incoming traffic
-	wg   sync.WaitGroup 
+	wg   sync.WaitGroup
 }
 
 // New initializes a TCP server bound to the specified address.
@@ -54,8 +55,8 @@ func (s *Server) Start(ctx context.Context) error {
 			continue
 		}
 
-		s.wg.Add(1) //increment active connection counter
-		go s.handleConnection(ctx, conn) //new independent goroutine for this specific  client
+		s.wg.Add(1)                      //increment active connection counter
+		go s.handleConnection(ctx, conn) //new independent goroutine for this specific client
 	}
 }
 
@@ -101,14 +102,37 @@ func (s *Server) routeCommand(ctx context.Context, req protocol.Message) protoco
 		} else if j != nil {
 			resp.Job = j
 		}
+
+	case protocol.CmdEnqueue:
+		// 1. Validate the incoming network frame
+		if req.Job == nil || req.Job.Type == "" {
+			resp.Error = "invalid frame: missing job data for ENQUEUE"
+			break
+		}
+
+		// 2. Ensure the job has a unique ID before touching the database
+		if req.Job.ID == "" {
+			req.Job.ID = uuid.New().String()
+		}
+
+		// 2. Route the data to the SQLite engine
+		err := s.q.Enqueue(ctx, req.Job)
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.JobID = req.Job.ID
+		}
+
 	case protocol.CmdAck:
 		if err := s.q.Ack(ctx, req.JobID); err != nil {
 			resp.Error = err.Error()
 		}
+
 	case protocol.CmdFail:
 		if err := s.q.Fail(ctx, req.JobID, req.Error); err != nil {
 			resp.Error = err.Error()
 		}
+
 	default:
 		resp.Error = fmt.Sprintf("unknown command: %s", req.Command)
 	}
