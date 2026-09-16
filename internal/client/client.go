@@ -1,0 +1,99 @@
+package client
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"sync"
+
+	"github.com/ss1ngh/distq-go/internal/job"
+	"github.com/ss1ngh/distq-go/internal/protocol"
+)
+
+// client represents a persistent TCP connection to the remote distq server.
+type Client struct {
+	addr string
+	conn net.Conn
+	mu   sync.Mutex //serializes network frames over the full-duplex socket
+}
+
+// New dials the server and establishes the TCP handshake.
+func New(addr string) (*Client, error) {
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("connect to server %s: %w", addr, err)
+	}
+	return &Client{
+		addr: addr,
+		conn: conn,
+	}, nil
+}
+
+// Close gracefully severs the network connection.
+func (c *Client) Close() error {
+	return c.conn.Close()
+}
+
+// Dequeue asks the server for the next available job.
+func (c *Client) Dequeue(ctx context.Context) (*job.Job, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := protocol.Message{Command: protocol.CmdDequeue}
+	if err := protocol.WriteFrame(c.conn, req); err != nil {
+		return nil, fmt.Errorf("write frame: %w", err)
+	}
+
+	resp, err := protocol.ReadFrame(c.conn)
+	if err != nil {
+		return nil, fmt.Errorf("read frame: %w", err)
+	}
+
+	if resp.Error != "" {
+		return nil, fmt.Errorf("server error: %s", resp.Error)
+	}
+
+	return resp.Job, nil
+}
+
+// Ack notifies the server that a job was successfully completed.
+func (c *Client) Ack(ctx context.Context, jobID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := protocol.Message{Command: protocol.CmdAck, JobID: jobID}
+	if err := protocol.WriteFrame(c.conn, req); err != nil {
+		return err
+	}
+
+	resp, err := protocol.ReadFrame(c.conn)
+	if err != nil {
+		return err
+	}
+
+	if resp.Error != "" {
+		return fmt.Errorf("server error: %s", resp.Error)
+	}
+	return nil
+}
+
+// Fail notifies the server that a job failed, passing the error message for DLQ routing.
+func (c *Client) Fail(ctx context.Context, jobID string, errMsg string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := protocol.Message{Command: protocol.CmdFail, JobID: jobID, Error: errMsg}
+	if err := protocol.WriteFrame(c.conn, req); err != nil {
+		return err
+	}
+
+	resp, err := protocol.ReadFrame(c.conn)
+	if err != nil {
+		return err
+	}
+
+	if resp.Error != "" {
+		return fmt.Errorf("server error: %s", resp.Error)
+	}
+	return nil
+}
