@@ -19,21 +19,25 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	JobQueue_Enqueue_FullMethodName = "/distq.JobQueue/Enqueue"
-	JobQueue_Dequeue_FullMethodName = "/distq.JobQueue/Dequeue"
-	JobQueue_Ack_FullMethodName     = "/distq.JobQueue/Ack"
-	JobQueue_Fail_FullMethodName    = "/distq.JobQueue/Fail"
+	JobQueue_Enqueue_FullMethodName  = "/distq.JobQueue/Enqueue"
+	JobQueue_Dequeue_FullMethodName  = "/distq.JobQueue/Dequeue"
+	JobQueue_Complete_FullMethodName = "/distq.JobQueue/Complete"
+	JobQueue_Fail_FullMethodName     = "/distq.JobQueue/Fail"
 )
 
 // JobQueueClient is the client API for JobQueue service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// The JobQueue service exposes our core remote procedure calls over HTTP/2
+// JobQueue service exposes our core remote procedure calls over HTTP/2
 type JobQueueClient interface {
 	Enqueue(ctx context.Context, in *EnqueueRequest, opts ...grpc.CallOption) (*EnqueueResponse, error)
 	Dequeue(ctx context.Context, in *DequeueRequest, opts ...grpc.CallOption) (*DequeueResponse, error)
-	Ack(ctx context.Context, in *AckRequest, opts ...grpc.CallOption) (*AckResponse, error)
+	// Complete marks a job as successfully finished (the old Ack, renamed:
+	// success and failure are both explicit outcomes now).
+	Complete(ctx context.Context, in *CompleteRequest, opts ...grpc.CallOption) (*CompleteResponse, error)
+	// Fail reports a handler failure; the SERVER decides retry-vs-DLQ
+	// and tells the worker what happened via `retrying`.
 	Fail(ctx context.Context, in *FailRequest, opts ...grpc.CallOption) (*FailResponse, error)
 }
 
@@ -65,10 +69,10 @@ func (c *jobQueueClient) Dequeue(ctx context.Context, in *DequeueRequest, opts .
 	return out, nil
 }
 
-func (c *jobQueueClient) Ack(ctx context.Context, in *AckRequest, opts ...grpc.CallOption) (*AckResponse, error) {
+func (c *jobQueueClient) Complete(ctx context.Context, in *CompleteRequest, opts ...grpc.CallOption) (*CompleteResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(AckResponse)
-	err := c.cc.Invoke(ctx, JobQueue_Ack_FullMethodName, in, out, cOpts...)
+	out := new(CompleteResponse)
+	err := c.cc.Invoke(ctx, JobQueue_Complete_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -89,11 +93,15 @@ func (c *jobQueueClient) Fail(ctx context.Context, in *FailRequest, opts ...grpc
 // All implementations must embed UnimplementedJobQueueServer
 // for forward compatibility.
 //
-// The JobQueue service exposes our core remote procedure calls over HTTP/2
+// JobQueue service exposes our core remote procedure calls over HTTP/2
 type JobQueueServer interface {
 	Enqueue(context.Context, *EnqueueRequest) (*EnqueueResponse, error)
 	Dequeue(context.Context, *DequeueRequest) (*DequeueResponse, error)
-	Ack(context.Context, *AckRequest) (*AckResponse, error)
+	// Complete marks a job as successfully finished (the old Ack, renamed:
+	// success and failure are both explicit outcomes now).
+	Complete(context.Context, *CompleteRequest) (*CompleteResponse, error)
+	// Fail reports a handler failure; the SERVER decides retry-vs-DLQ
+	// and tells the worker what happened via `retrying`.
 	Fail(context.Context, *FailRequest) (*FailResponse, error)
 	mustEmbedUnimplementedJobQueueServer()
 }
@@ -111,8 +119,8 @@ func (UnimplementedJobQueueServer) Enqueue(context.Context, *EnqueueRequest) (*E
 func (UnimplementedJobQueueServer) Dequeue(context.Context, *DequeueRequest) (*DequeueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Dequeue not implemented")
 }
-func (UnimplementedJobQueueServer) Ack(context.Context, *AckRequest) (*AckResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Ack not implemented")
+func (UnimplementedJobQueueServer) Complete(context.Context, *CompleteRequest) (*CompleteResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Complete not implemented")
 }
 func (UnimplementedJobQueueServer) Fail(context.Context, *FailRequest) (*FailResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Fail not implemented")
@@ -174,20 +182,20 @@ func _JobQueue_Dequeue_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
-func _JobQueue_Ack_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(AckRequest)
+func _JobQueue_Complete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompleteRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(JobQueueServer).Ack(ctx, in)
+		return srv.(JobQueueServer).Complete(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: JobQueue_Ack_FullMethodName,
+		FullMethod: JobQueue_Complete_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(JobQueueServer).Ack(ctx, req.(*AckRequest))
+		return srv.(JobQueueServer).Complete(ctx, req.(*CompleteRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -226,8 +234,8 @@ var JobQueue_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _JobQueue_Dequeue_Handler,
 		},
 		{
-			MethodName: "Ack",
-			Handler:    _JobQueue_Ack_Handler,
+			MethodName: "Complete",
+			Handler:    _JobQueue_Complete_Handler,
 		},
 		{
 			MethodName: "Fail",

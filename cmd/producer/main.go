@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/ss1ngh/distq-go/internal/pb"
@@ -11,10 +12,28 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// demo jobs:
+//
+//	normal — succeeds on the first attempt
+//	flaky  — worker simulates two transient failures, then succeeds (retry path)
+//	doomed — always fails; after exhausting retries it lands in the DLQ
 func main() {
-	fmt.Println("[Producer] Booting up...")
+	jobType := "normal"
+	count := 3
+	if len(os.Args) > 1 {
+		jobType = os.Args[1]
+	}
+	if len(os.Args) > 2 {
+		n, err := strconv.Atoi(os.Args[2])
+		if err != nil || n < 1 {
+			fmt.Fprintln(os.Stderr, "count must be a positive integer")
+			os.Exit(1)
+		}
+		count = n
+	}
 
-	//Dial grpc server, insecure for localhost
+	fmt.Printf("[Producer] Booting up...\n")
+
 	conn, err := grpc.NewClient("localhost:4040", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Producer] Fatal: Could not connect to server: %v\n", err)
@@ -22,22 +41,18 @@ func main() {
 	}
 	defer conn.Close()
 
-	//instantiate auto generated client stub
 	client := pb.NewJobQueueClient(conn)
-	fmt.Println("[Producer] Connected to gRPC Server at localhost:4040")
+	fmt.Printf("[Producer] Connected to gRPC Server at localhost:4040\n")
 
 	ctx := context.Background()
-	jobCount := 10 //inject 10 jobs
+	fmt.Printf("[Producer] Injecting %d '%s' jobs into the network...\n", count, jobType)
 
-	fmt.Printf("[Producer] Injecting %d jobs into the network...\n", jobCount)
-
-	for i := 1; i <= jobCount; i++ {
-		//Generate payload
-		payload := []byte(fmt.Sprintf(`{"video_id": "vid_%d", "resolution": "1080p"}`, i))
+	for i := 1; i <= count; i++ {
+		payload := []byte(fmt.Sprintf(`{"demo": "%s", "seq": %d}`, jobType, i))
 
 		req := &pb.EnqueueRequest{
 			Job: &pb.Job{
-				Type:    "process_video",
+				Type:    jobType,
 				Payload: payload,
 			},
 		}
@@ -47,14 +62,13 @@ func main() {
 			fmt.Printf("[Producer] Network error enqueuing job %d: %v\n", i, err)
 			continue
 		}
-
 		if resp.Error != "" {
-			fmt.Printf("[Producer] Server rejected Job %d : %v\n", i, resp.Error)
+			fmt.Printf("[Producer] Server rejected job %d: %s\n", i, resp.Error)
 			continue
 		}
 
-		fmt.Printf("[Producer] Successfully enqueued job %d -> ID: %s\n", i, resp.JobId)
-		time.Sleep(500 * time.Millisecond)
+		fmt.Printf("[Producer] Enqueued job %d -> ID: %s\n", i, resp.JobId)
+		time.Sleep(300 * time.Millisecond)
 	}
 	fmt.Println("[Producer] Finished injecting jobs. Shutting down.")
 }

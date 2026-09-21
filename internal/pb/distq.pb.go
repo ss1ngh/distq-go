@@ -23,12 +23,15 @@ const (
 
 // Core Job structure representing a background task
 type Job struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
-	Status        string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
-	Error         string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Id      string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Type    string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"`
+	Payload []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	Status  string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
+	Error   string                 `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
+	// Retry bookkeeping — the server owns these, the worker only reads them.
+	RetryCount    int32 `protobuf:"varint,6,opt,name=retry_count,json=retryCount,proto3" json:"retry_count,omitempty"`
+	MaxRetries    int32 `protobuf:"varint,7,opt,name=max_retries,json=maxRetries,proto3" json:"max_retries,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -96,6 +99,20 @@ func (x *Job) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *Job) GetRetryCount() int32 {
+	if x != nil {
+		return x.RetryCount
+	}
+	return 0
+}
+
+func (x *Job) GetMaxRetries() int32 {
+	if x != nil {
+		return x.MaxRetries
+	}
+	return 0
 }
 
 // Enqueue RPC structures
@@ -292,28 +309,28 @@ func (x *DequeueResponse) GetError() string {
 	return ""
 }
 
-// Ack RPC structures
-type AckRequest struct {
+// Complete RPC structures
+type CompleteRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AckRequest) Reset() {
-	*x = AckRequest{}
+func (x *CompleteRequest) Reset() {
+	*x = CompleteRequest{}
 	mi := &file_distq_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AckRequest) String() string {
+func (x *CompleteRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AckRequest) ProtoMessage() {}
+func (*CompleteRequest) ProtoMessage() {}
 
-func (x *AckRequest) ProtoReflect() protoreflect.Message {
+func (x *CompleteRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_distq_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -325,39 +342,39 @@ func (x *AckRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AckRequest.ProtoReflect.Descriptor instead.
-func (*AckRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use CompleteRequest.ProtoReflect.Descriptor instead.
+func (*CompleteRequest) Descriptor() ([]byte, []int) {
 	return file_distq_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *AckRequest) GetJobId() string {
+func (x *CompleteRequest) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-type AckResponse struct {
+type CompleteResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *AckResponse) Reset() {
-	*x = AckResponse{}
+func (x *CompleteResponse) Reset() {
+	*x = CompleteResponse{}
 	mi := &file_distq_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *AckResponse) String() string {
+func (x *CompleteResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*AckResponse) ProtoMessage() {}
+func (*CompleteResponse) ProtoMessage() {}
 
-func (x *AckResponse) ProtoReflect() protoreflect.Message {
+func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_distq_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -369,12 +386,12 @@ func (x *AckResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use AckResponse.ProtoReflect.Descriptor instead.
-func (*AckResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use CompleteResponse.ProtoReflect.Descriptor instead.
+func (*CompleteResponse) Descriptor() ([]byte, []int) {
 	return file_distq_proto_rawDescGZIP(), []int{6}
 }
 
-func (x *AckResponse) GetError() string {
+func (x *CompleteResponse) GetError() string {
 	if x != nil {
 		return x.Error
 	}
@@ -435,8 +452,10 @@ func (x *FailRequest) GetErrorMessage() string {
 }
 
 type FailResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// true = job was re-queued with backoff; false = job exceeded max retries and is in the DLQ.
+	Retrying      bool   `protobuf:"varint,1,opt,name=retrying,proto3" json:"retrying,omitempty"`
+	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -471,6 +490,13 @@ func (*FailResponse) Descriptor() ([]byte, []int) {
 	return file_distq_proto_rawDescGZIP(), []int{8}
 }
 
+func (x *FailResponse) GetRetrying() bool {
+	if x != nil {
+		return x.Retrying
+	}
+	return false
+}
+
 func (x *FailResponse) GetError() string {
 	if x != nil {
 		return x.Error
@@ -482,13 +508,17 @@ var File_distq_proto protoreflect.FileDescriptor
 
 const file_distq_proto_rawDesc = "" +
 	"\n" +
-	"\vdistq.proto\x12\x05distq\"q\n" +
+	"\vdistq.proto\x12\x05distq\"\xb3\x01\n" +
 	"\x03Job\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\x12\x16\n" +
 	"\x06status\x18\x04 \x01(\tR\x06status\x12\x14\n" +
-	"\x05error\x18\x05 \x01(\tR\x05error\".\n" +
+	"\x05error\x18\x05 \x01(\tR\x05error\x12\x1f\n" +
+	"\vretry_count\x18\x06 \x01(\x05R\n" +
+	"retryCount\x12\x1f\n" +
+	"\vmax_retries\x18\a \x01(\x05R\n" +
+	"maxRetries\".\n" +
 	"\x0eEnqueueRequest\x12\x1c\n" +
 	"\x03job\x18\x01 \x01(\v2\n" +
 	".distq.JobR\x03job\">\n" +
@@ -500,21 +530,21 @@ const file_distq_proto_rawDesc = "" +
 	"\x0fDequeueResponse\x12\x1c\n" +
 	"\x03job\x18\x01 \x01(\v2\n" +
 	".distq.JobR\x03job\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"#\n" +
-	"\n" +
-	"AckRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"#\n" +
-	"\vAckResponse\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"(\n" +
+	"\x0fCompleteRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"(\n" +
+	"\x10CompleteResponse\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\tR\x05error\"I\n" +
 	"\vFailRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12#\n" +
-	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\"$\n" +
-	"\fFailResponse\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error2\xdd\x01\n" +
+	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\"@\n" +
+	"\fFailResponse\x12\x1a\n" +
+	"\bretrying\x18\x01 \x01(\bR\bretrying\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error2\xec\x01\n" +
 	"\bJobQueue\x128\n" +
 	"\aEnqueue\x12\x15.distq.EnqueueRequest\x1a\x16.distq.EnqueueResponse\x128\n" +
-	"\aDequeue\x12\x15.distq.DequeueRequest\x1a\x16.distq.DequeueResponse\x12,\n" +
-	"\x03Ack\x12\x11.distq.AckRequest\x1a\x12.distq.AckResponse\x12/\n" +
+	"\aDequeue\x12\x15.distq.DequeueRequest\x1a\x16.distq.DequeueResponse\x12;\n" +
+	"\bComplete\x12\x16.distq.CompleteRequest\x1a\x17.distq.CompleteResponse\x12/\n" +
 	"\x04Fail\x12\x12.distq.FailRequest\x1a\x13.distq.FailResponseB(Z&github.com/ss1ngh/distq-go/internal/pbb\x06proto3"
 
 var (
@@ -531,26 +561,26 @@ func file_distq_proto_rawDescGZIP() []byte {
 
 var file_distq_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_distq_proto_goTypes = []any{
-	(*Job)(nil),             // 0: distq.Job
-	(*EnqueueRequest)(nil),  // 1: distq.EnqueueRequest
-	(*EnqueueResponse)(nil), // 2: distq.EnqueueResponse
-	(*DequeueRequest)(nil),  // 3: distq.DequeueRequest
-	(*DequeueResponse)(nil), // 4: distq.DequeueResponse
-	(*AckRequest)(nil),      // 5: distq.AckRequest
-	(*AckResponse)(nil),     // 6: distq.AckResponse
-	(*FailRequest)(nil),     // 7: distq.FailRequest
-	(*FailResponse)(nil),    // 8: distq.FailResponse
+	(*Job)(nil),              // 0: distq.Job
+	(*EnqueueRequest)(nil),   // 1: distq.EnqueueRequest
+	(*EnqueueResponse)(nil),  // 2: distq.EnqueueResponse
+	(*DequeueRequest)(nil),   // 3: distq.DequeueRequest
+	(*DequeueResponse)(nil),  // 4: distq.DequeueResponse
+	(*CompleteRequest)(nil),  // 5: distq.CompleteRequest
+	(*CompleteResponse)(nil), // 6: distq.CompleteResponse
+	(*FailRequest)(nil),      // 7: distq.FailRequest
+	(*FailResponse)(nil),     // 8: distq.FailResponse
 }
 var file_distq_proto_depIdxs = []int32{
 	0, // 0: distq.EnqueueRequest.job:type_name -> distq.Job
 	0, // 1: distq.DequeueResponse.job:type_name -> distq.Job
 	1, // 2: distq.JobQueue.Enqueue:input_type -> distq.EnqueueRequest
 	3, // 3: distq.JobQueue.Dequeue:input_type -> distq.DequeueRequest
-	5, // 4: distq.JobQueue.Ack:input_type -> distq.AckRequest
+	5, // 4: distq.JobQueue.Complete:input_type -> distq.CompleteRequest
 	7, // 5: distq.JobQueue.Fail:input_type -> distq.FailRequest
 	2, // 6: distq.JobQueue.Enqueue:output_type -> distq.EnqueueResponse
 	4, // 7: distq.JobQueue.Dequeue:output_type -> distq.DequeueResponse
-	6, // 8: distq.JobQueue.Ack:output_type -> distq.AckResponse
+	6, // 8: distq.JobQueue.Complete:output_type -> distq.CompleteResponse
 	8, // 9: distq.JobQueue.Fail:output_type -> distq.FailResponse
 	6, // [6:10] is the sub-list for method output_type
 	2, // [2:6] is the sub-list for method input_type

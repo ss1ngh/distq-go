@@ -13,7 +13,7 @@ type Server struct {
 	q *queue.Queue
 }
 
-// New initializes a TCP server bound to the specified address.
+// New initializes a server backed by the given queue.
 func New(q *queue.Queue) *Server {
 	return &Server{
 		q: q,
@@ -48,18 +48,20 @@ func (s *Server) Dequeue(ctx context.Context, req *pb.DequeueRequest) (*pb.Deque
 	return &pb.DequeueResponse{Job: job}, nil
 }
 
-// Ack marks a job as successfully completed.
-func (s *Server) Ack(ctx context.Context, req *pb.AckRequest) (*pb.AckResponse, error) {
-	if err := s.q.Ack(ctx, req.GetJobId()); err != nil {
-		return &pb.AckResponse{Error: err.Error()}, nil
+// Complete marks a job as successfully finished.
+func (s *Server) Complete(ctx context.Context, req *pb.CompleteRequest) (*pb.CompleteResponse, error) {
+	if err := s.q.Complete(ctx, req.GetJobId()); err != nil {
+		return &pb.CompleteResponse{Error: err.Error()}, nil
 	}
-	return &pb.AckResponse{}, nil
+	return &pb.CompleteResponse{}, nil
 }
 
-// Fail marks a job as failed and records the reason.
+// Fail reports a handler failure. The queue/store decides retry-vs-DLQ
+// atomically and we surface the decision to the worker.
 func (s *Server) Fail(ctx context.Context, req *pb.FailRequest) (*pb.FailResponse, error) {
-	if err := s.q.Fail(ctx, req.GetJobId(), req.GetErrorMessage()); err != nil {
+	retrying, err := s.q.Fail(ctx, req.GetJobId(), req.GetErrorMessage())
+	if err != nil {
 		return &pb.FailResponse{Error: err.Error()}, nil
 	}
-	return &pb.FailResponse{}, nil
+	return &pb.FailResponse{Retrying: retrying}, nil
 }

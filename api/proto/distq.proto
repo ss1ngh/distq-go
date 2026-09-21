@@ -9,7 +9,11 @@ option go_package = "github.com/ss1ngh/distq-go/internal/pb";
 service JobQueue {
   rpc Enqueue (EnqueueRequest) returns (EnqueueResponse);
   rpc Dequeue (DequeueRequest) returns (DequeueResponse);
-  rpc Ack (AckRequest) returns (AckResponse);
+  // Complete marks a job as successfully finished (the old Ack, renamed:
+  // success and failure are both explicit outcomes now).
+  rpc Complete (CompleteRequest) returns (CompleteResponse);
+  // Fail reports a handler failure; the SERVER decides retry-vs-DLQ
+  // and tells the worker what happened via `retrying`.
   rpc Fail (FailRequest) returns (FailResponse);
 }
 
@@ -20,6 +24,9 @@ message Job {
   bytes payload = 3;
   string status = 4;
   string error = 5;
+  // Retry bookkeeping — the server owns these, the worker only reads them.
+  int32 retry_count = 6;
+  int32 max_retries = 7;
 }
 
 // Enqueue RPC structures
@@ -42,12 +49,12 @@ message DequeueResponse {
   string error = 2;
 }
 
-// Ack RPC structures
-message AckRequest {
+// Complete RPC structures
+message CompleteRequest {
   string job_id = 1;
 }
 
-message AckResponse {
+message CompleteResponse {
   string error = 1;
 }
 
@@ -58,5 +65,7 @@ message FailRequest {
 }
 
 message FailResponse {
-  string error = 1;
+  // true = job was re-queued with backoff; false = job exceeded max retries and is in the DLQ.
+  bool retrying = 1;
+  string error = 2;
 }

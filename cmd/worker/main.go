@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -15,9 +16,27 @@ import (
 	"github.com/ss1ngh/distq-go/internal/pb"
 )
 
+// flakyHandler simulates real work. Two personalities exercise the failure
+// paths: "flaky" fails twice then succeeds (retry path), "doomed" always
+// fails (DLQ path).
+func flakyHandler(ctx context.Context, job *pb.Job, attempt int) error {
+	switch job.Type {
+	case "flaky":
+		if attempt <= 2 {
+			return fmt.Errorf("transient failure (simulated), attempt %d", attempt)
+		}
+		return nil
+	case "doomed":
+		return fmt.Errorf("this job never succeeds (simulated)")
+	default:
+		time.Sleep(500 * time.Millisecond) // simulate work
+		return nil
+	}
+}
+
 func main() {
-	workerID := uuid.New().String()
-	fmt.Printf("[Worker %s] Booting Distributed Node...\n", workerID[:8])
+	workerID := uuid.New().String()[:8]
+	fmt.Printf("[Worker %s] Booting Distributed Node...\n", workerID)
 
 	conn, err := grpc.NewClient("localhost:4040", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -46,10 +65,11 @@ func main() {
 			break
 		}
 
-		req := &pb.DequeueRequest{WorkerId: workerID}
-		resp, err := client.Dequeue(ctx, req)
-
+		resp, err := client.Dequeue(ctx, &pb.DequeueRequest{WorkerId: workerID})
 		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
 			fmt.Printf("[Worker] Network error: %v\n", err)
 			time.Sleep(2 * time.Second)
 			continue
@@ -62,19 +82,54 @@ func main() {
 
 		job := resp.GetJob()
 		if job == nil {
-			time.Sleep(1 * time.Second)
+			time.Sleep(1 * time.Second) // idle backoff
 			continue
 		}
 
-		fmt.Printf("[Worker] Processing Job [%s] - Type: %s\n", job.Id, job.Type)
-		time.Sleep(2 * time.Second) // Simulate work
+		attempt := int(job.RetryCount) + 1
+		fmt.Printf("[Worker %s] Processing Job [%s] type=%s attempt=%d/%d\n",
+			workerID, shortID(job.Id), job.Type, attempt, job.MaxRetries+1)
 
-		ackResp, err := client.Ack(ctx, &pb.AckRequest{JobId: job.Id})
-		if err != nil || ackResp.Error != "" {
-			fmt.Printf("[Worker] Failed to ACK Job [%s]\n", job.Id)
+		err = flakyHandler(ctx, job, attempt)
+
+		if err == nil {
+			ackResp, ackErr := client.Complete(ctx, &pb.CompleteRequest{JobId: job.Id})
+			if ackErr != nil || ackResp.Error != "" {
+				fmt.Printf("[Worker] Failed to COMPLETE Job [%s]: %v %v\n", shortID(job.Id), ackErr, ackResp.GetError())
+			} else {
+				fmt.Printf("[Worker %s] Job [%s] done ✓\n", workerID, shortID(job.Id))
+			}
+			continue
+		}
+
+		// The lesson: on failure we no longer drop the job. We report it,
+		// and the SERVER decides retry-vs-DLQ atomically.
+		failResp, failErr := client.Fail(ctx, &pb.FailRequest{
+			JobId:        job.Id,
+			ErrorMessage: err.Error(),
+		})
+		if failErr != nil || failResp.Error != "" {
+			fmt.Printf("[Worker] Failed to report failure for [%s]: %v %v\n", shortID(job.Id), failErr, failResp.GetError())
+			continue
+		}
+
+		if failResp.Retrying {
+			fmt.Printf("[Worker %s] Job [%s] failed → re-queued with backoff (attempt %d/%d)\n",
+				workerID, shortID(job.Id), attempt, job.MaxRetries+1)
 		} else {
-			fmt.Printf("[Worker] Successfully completed Job [%s]\n", job.Id)
+			fmt.Printf("[Worker %s] Job [%s] failed → moved to DLQ ✗\n", workerID, shortID(job.Id))
+		}
+
+		if errors.Is(err, context.Canceled) {
+			break
 		}
 	}
 	fmt.Println("[Worker] Engine shutdown complete.")
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
