@@ -20,10 +20,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	JobQueue_Enqueue_FullMethodName   = "/distq.JobQueue/Enqueue"
-	JobQueue_Dequeue_FullMethodName   = "/distq.JobQueue/Dequeue"
-	JobQueue_Complete_FullMethodName  = "/distq.JobQueue/Complete"
-	JobQueue_Fail_FullMethodName      = "/distq.JobQueue/Fail"
-	JobQueue_Heartbeat_FullMethodName = "/distq.JobQueue/Heartbeat"
+	JobQueue_JobStream_FullMethodName = "/distq.JobQueue/JobStream"
 )
 
 // JobQueueClient is the client API for JobQueue service.
@@ -33,16 +30,11 @@ const (
 // JobQueue service exposes our core remote procedure calls over HTTP/2
 type JobQueueClient interface {
 	Enqueue(ctx context.Context, in *EnqueueRequest, opts ...grpc.CallOption) (*EnqueueResponse, error)
-	Dequeue(ctx context.Context, in *DequeueRequest, opts ...grpc.CallOption) (*DequeueResponse, error)
-	// Complete marks a job as successfully finished (the old Ack, renamed:
-	// success and failure are both explicit outcomes now).
-	Complete(ctx context.Context, in *CompleteRequest, opts ...grpc.CallOption) (*CompleteResponse, error)
-	// Fail reports a handler failure; the SERVER decides retry-vs-DLQ
-	// and tells the worker what happened via `retrying`.
-	Fail(ctx context.Context, in *FailRequest, opts ...grpc.CallOption) (*FailResponse, error)
-	// Heartbeat renews a job's lease while its worker is still working on it, so
-	// a slow job is not mistaken for a dead worker.
-	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
+	// JobStream is one long-lived connection per worker: the worker opens it with
+	// a Hello naming itself, is pushed jobs as they become available, and reports
+	// how each one went. Nothing is polled — an idle worker waits on the stream,
+	// which costs the queue no queries at all.
+	JobStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WorkerMessage, ServerMessage], error)
 }
 
 type jobQueueClient struct {
@@ -63,45 +55,18 @@ func (c *jobQueueClient) Enqueue(ctx context.Context, in *EnqueueRequest, opts .
 	return out, nil
 }
 
-func (c *jobQueueClient) Dequeue(ctx context.Context, in *DequeueRequest, opts ...grpc.CallOption) (*DequeueResponse, error) {
+func (c *jobQueueClient) JobStream(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[WorkerMessage, ServerMessage], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(DequeueResponse)
-	err := c.cc.Invoke(ctx, JobQueue_Dequeue_FullMethodName, in, out, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &JobQueue_ServiceDesc.Streams[0], JobQueue_JobStream_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	x := &grpc.GenericClientStream[WorkerMessage, ServerMessage]{ClientStream: stream}
+	return x, nil
 }
 
-func (c *jobQueueClient) Complete(ctx context.Context, in *CompleteRequest, opts ...grpc.CallOption) (*CompleteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(CompleteResponse)
-	err := c.cc.Invoke(ctx, JobQueue_Complete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *jobQueueClient) Fail(ctx context.Context, in *FailRequest, opts ...grpc.CallOption) (*FailResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(FailResponse)
-	err := c.cc.Invoke(ctx, JobQueue_Fail_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *jobQueueClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(HeartbeatResponse)
-	err := c.cc.Invoke(ctx, JobQueue_Heartbeat_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type JobQueue_JobStreamClient = grpc.BidiStreamingClient[WorkerMessage, ServerMessage]
 
 // JobQueueServer is the server API for JobQueue service.
 // All implementations must embed UnimplementedJobQueueServer
@@ -110,16 +75,11 @@ func (c *jobQueueClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, op
 // JobQueue service exposes our core remote procedure calls over HTTP/2
 type JobQueueServer interface {
 	Enqueue(context.Context, *EnqueueRequest) (*EnqueueResponse, error)
-	Dequeue(context.Context, *DequeueRequest) (*DequeueResponse, error)
-	// Complete marks a job as successfully finished (the old Ack, renamed:
-	// success and failure are both explicit outcomes now).
-	Complete(context.Context, *CompleteRequest) (*CompleteResponse, error)
-	// Fail reports a handler failure; the SERVER decides retry-vs-DLQ
-	// and tells the worker what happened via `retrying`.
-	Fail(context.Context, *FailRequest) (*FailResponse, error)
-	// Heartbeat renews a job's lease while its worker is still working on it, so
-	// a slow job is not mistaken for a dead worker.
-	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
+	// JobStream is one long-lived connection per worker: the worker opens it with
+	// a Hello naming itself, is pushed jobs as they become available, and reports
+	// how each one went. Nothing is polled — an idle worker waits on the stream,
+	// which costs the queue no queries at all.
+	JobStream(grpc.BidiStreamingServer[WorkerMessage, ServerMessage]) error
 	mustEmbedUnimplementedJobQueueServer()
 }
 
@@ -133,17 +93,8 @@ type UnimplementedJobQueueServer struct{}
 func (UnimplementedJobQueueServer) Enqueue(context.Context, *EnqueueRequest) (*EnqueueResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Enqueue not implemented")
 }
-func (UnimplementedJobQueueServer) Dequeue(context.Context, *DequeueRequest) (*DequeueResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Dequeue not implemented")
-}
-func (UnimplementedJobQueueServer) Complete(context.Context, *CompleteRequest) (*CompleteResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Complete not implemented")
-}
-func (UnimplementedJobQueueServer) Fail(context.Context, *FailRequest) (*FailResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Fail not implemented")
-}
-func (UnimplementedJobQueueServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
+func (UnimplementedJobQueueServer) JobStream(grpc.BidiStreamingServer[WorkerMessage, ServerMessage]) error {
+	return status.Error(codes.Unimplemented, "method JobStream not implemented")
 }
 func (UnimplementedJobQueueServer) mustEmbedUnimplementedJobQueueServer() {}
 func (UnimplementedJobQueueServer) testEmbeddedByValue()                  {}
@@ -184,77 +135,12 @@ func _JobQueue_Enqueue_Handler(srv interface{}, ctx context.Context, dec func(in
 	return interceptor(ctx, in, info, handler)
 }
 
-func _JobQueue_Dequeue_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DequeueRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(JobQueueServer).Dequeue(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: JobQueue_Dequeue_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(JobQueueServer).Dequeue(ctx, req.(*DequeueRequest))
-	}
-	return interceptor(ctx, in, info, handler)
+func _JobQueue_JobStream_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(JobQueueServer).JobStream(&grpc.GenericServerStream[WorkerMessage, ServerMessage]{ServerStream: stream})
 }
 
-func _JobQueue_Complete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CompleteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(JobQueueServer).Complete(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: JobQueue_Complete_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(JobQueueServer).Complete(ctx, req.(*CompleteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _JobQueue_Fail_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(FailRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(JobQueueServer).Fail(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: JobQueue_Fail_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(JobQueueServer).Fail(ctx, req.(*FailRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _JobQueue_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(HeartbeatRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(JobQueueServer).Heartbeat(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: JobQueue_Heartbeat_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(JobQueueServer).Heartbeat(ctx, req.(*HeartbeatRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type JobQueue_JobStreamServer = grpc.BidiStreamingServer[WorkerMessage, ServerMessage]
 
 // JobQueue_ServiceDesc is the grpc.ServiceDesc for JobQueue service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -267,23 +153,14 @@ var JobQueue_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "Enqueue",
 			Handler:    _JobQueue_Enqueue_Handler,
 		},
+	},
+	Streams: []grpc.StreamDesc{
 		{
-			MethodName: "Dequeue",
-			Handler:    _JobQueue_Dequeue_Handler,
-		},
-		{
-			MethodName: "Complete",
-			Handler:    _JobQueue_Complete_Handler,
-		},
-		{
-			MethodName: "Fail",
-			Handler:    _JobQueue_Fail_Handler,
-		},
-		{
-			MethodName: "Heartbeat",
-			Handler:    _JobQueue_Heartbeat_Handler,
+			StreamName:    "JobStream",
+			Handler:       _JobQueue_JobStream_Handler,
+			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
-	Streams:  []grpc.StreamDesc{},
 	Metadata: "distq.proto",
 }

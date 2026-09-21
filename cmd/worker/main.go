@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,21 +17,212 @@ import (
 	"github.com/ss1ngh/distq-go/internal/pb"
 )
 
-// defaultLeaseFor is the fallback for how long this worker assumes it owns a
-// claim, used only if the server does not say. It matches the queue's default.
-const defaultLeaseFor = 30 * time.Second
+const (
+	// serverAddr is the queue server every worker dials.
+	serverAddr = "localhost:4040"
+	// reconnectDelay is how long a worker waits before opening a new stream after
+	// one breaks, so a server restart does not turn into a hot reconnect loop.
+	reconnectDelay = 2 * time.Second
+	// defaultLeaseFor is the fallback for how long this worker assumes it owns a
+	// claim, used only if the server does not say. It matches the queue's default.
+	defaultLeaseFor = 30 * time.Second
+)
 
-// errLeaseLost cancels the handler when the server reports that this worker no
+// errLeaseLost cancels a handler when the server reports that this worker no
 // longer owns the job: it is somebody else's to finish now.
 var errLeaseLost = errors.New("lease lost")
 
-// flakyHandler simulates real work. The job types exercise one path each:
+// worker is one remote node: a single stream to the server, jobs pushed down it,
+// and one job handled at a time.
+type worker struct {
+	id     string
+	client pb.JobQueueClient
+
+	// A stream may only be sent on by one goroutine at a time, and a job's
+	// heartbeat and its result both send, so every send goes through send().
+	sendMu sync.Mutex
+	stream pb.JobQueue_JobStreamClient
+}
+
+func main() {
+	w := &worker{id: uuid.New().String()[:8], client: dial()}
+	fmt.Printf("[Worker %s] Booting Distributed Node...\n", w.id)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	for ctx.Err() == nil {
+		if err := w.run(ctx); err != nil && ctx.Err() == nil {
+			fmt.Printf("[Worker %s] Stream ended: %v\n", w.id, err)
+		}
+		wait(ctx, reconnectDelay)
+	}
+	fmt.Println("[Worker] Engine shutdown complete.")
+}
+
+func dial() pb.JobQueueClient {
+	conn, err := grpc.NewClient(serverAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[Worker] Fatal: Failed to connect: %v\n", err)
+		os.Exit(1)
+	}
+	return pb.NewJobQueueClient(conn)
+}
+
+// run opens a stream and serves jobs on it until the stream breaks. It is called
+// again for every reconnection, so it must leave no job half-reported: a job whose
+// stream dies loses only its lease, and the reaper hands it to somebody else.
+func (w *worker) run(ctx context.Context) error {
+	stream, err := w.client.JobStream(ctx)
+	if err != nil {
+		return err
+	}
+	w.stream = stream
+
+	if err := w.send(&pb.WorkerMessage{Message: &pb.WorkerMessage_Hello{Hello: &pb.Hello{WorkerId: w.id}}}); err != nil {
+		return err
+	}
+	fmt.Printf("[Worker %s] Listening for jobs...\n", w.id)
+
+	// The job in flight, tracked here in the read loop rather than shared with the
+	// handler, so cancelling it needs no locking.
+	var (
+		jobID  string
+		cancel context.CancelCauseFunc
+	)
+
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+
+		switch m := msg.GetMessage().(type) {
+		case *pb.ServerMessage_Assigned:
+			jobID, cancel = w.start(ctx, m.Assigned)
+
+		case *pb.ServerMessage_Lost:
+			// The server has already given this job to somebody else. Stop now
+			// rather than racing the new owner to write the result.
+			if lost := m.Lost.GetJobId(); lost == jobID && cancel != nil {
+				cancel(errLeaseLost)
+				jobID, cancel = "", nil
+				fmt.Printf("[Worker %s] Job [%s] lease lost — abandoned\n", w.id, shortID(lost))
+			}
+
+		case *pb.ServerMessage_Result:
+			logResult(w.id, m.Result)
+			if m.Result.GetJobId() == jobID {
+				// Settled. Clearing the slot means a Lost for this job arriving
+				// late cannot cancel whatever runs next.
+				jobID, cancel = "", nil
+			}
+		}
+	}
+}
+
+// start begins a job's handler in the background and returns the pair the read
+// loop needs to take it away again. The handler runs in its own goroutine so the
+// loop stays free to receive a Lost or the next Assigned while it works.
+func (w *worker) start(ctx context.Context, assigned *pb.Assigned) (string, context.CancelCauseFunc) {
+	job := assigned.GetJob()
+	jobCtx, cancel := context.WithCancelCause(ctx)
+
+	go w.work(jobCtx, cancel, job, assigned.GetLeaseSeconds())
+
+	return job.Id, cancel
+}
+
+// work runs one job and reports the verdict. It reports nothing if the job was
+// taken away from it mid-flight: the server already knows, and the fence would
+// refuse the report anyway.
+func (w *worker) work(ctx context.Context, cancel context.CancelCauseFunc, job *pb.Job, leaseSeconds int32) {
+	lease := time.Duration(leaseSeconds) * time.Second
+	if lease <= 0 {
+		lease = defaultLeaseFor
+	}
+
+	attempt := int(job.RetryCount) + 1
+	fmt.Printf("[Worker %s] Processing Job [%s] type=%s attempt=%d/%d (lease %s)\n",
+		w.id, shortID(job.Id), job.Type, attempt, job.MaxRetries+1, lease)
+
+	go beatLease(ctx, w, job.Id, lease)
+
+	err := handle(ctx, job, attempt)
+
+	// Stop the heartbeat before reporting. A beat that arrives after the report
+	// reads as this worker losing a job it has just finished — and on a retry it
+	// would cancel the next attempt of the same job.
+	cancel(nil)
+
+	if errors.Is(context.Cause(ctx), errLeaseLost) {
+		return
+	}
+
+	report := &pb.WorkerMessage{Message: &pb.WorkerMessage_Completed{Completed: &pb.Completed{JobId: job.Id}}}
+	if err != nil {
+		report = &pb.WorkerMessage{Message: &pb.WorkerMessage_Failed{Failed: &pb.Failed{JobId: job.Id, ErrorMessage: err.Error()}}}
+	}
+	if err := w.send(report); err != nil {
+		fmt.Printf("[Worker] Could not report job [%s]: %v\n", shortID(job.Id), err)
+	}
+}
+
+// beatLease tells the server this job is still being worked on, so its lease does
+// not lapse and the job is not handed to another worker. Being told the job is
+// gone is the read loop's job, not this one's: all this side has to say is "still
+// here", and stop saying it when the work stops.
+func beatLease(ctx context.Context, w *worker, jobID string, lease time.Duration) {
+	interval := lease / 3
+	if interval <= 0 {
+		interval = time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			msg := &pb.WorkerMessage{Message: &pb.WorkerMessage_Heartbeat{Heartbeat: &pb.Heartbeat{JobId: jobID}}}
+			if err := w.send(msg); err != nil {
+				return // the stream is gone; there is nothing left to keep alive
+			}
+		}
+	}
+}
+
+// send is the only way this worker writes to its stream.
+func (w *worker) send(msg *pb.WorkerMessage) error {
+	w.sendMu.Lock()
+	defer w.sendMu.Unlock()
+
+	return w.stream.Send(msg)
+}
+
+// logResult reports what the server did with a result this worker sent.
+func logResult(workerID string, r *pb.Result) {
+	switch r.GetOutcome() {
+	case pb.Outcome_OUTCOME_ACCEPTED:
+		fmt.Printf("[Worker %s] Job [%s] done ✓\n", workerID, shortID(r.GetJobId()))
+	case pb.Outcome_OUTCOME_RETRYING:
+		fmt.Printf("[Worker %s] Job [%s] failed → re-queued with backoff\n", workerID, shortID(r.GetJobId()))
+	case pb.Outcome_OUTCOME_DEAD_LETTERED:
+		fmt.Printf("[Worker %s] Job [%s] failed → moved to DLQ ✗\n", workerID, shortID(r.GetJobId()))
+	case pb.Outcome_OUTCOME_REFUSED:
+		fmt.Printf("[Worker %s] Job [%s] refused: %s\n", workerID, shortID(r.GetJobId()), r.GetError())
+	}
+}
+
+// handle simulates real work. The job types exercise one path each:
 //
 //	flaky — fails twice, then succeeds (retry path)
 //	doomed — always fails (ends up in the DLQ)
 //	slow — outlives the lease, so the heartbeat has to keep it alive
 //	anything else — succeeds on the first attempt
-func flakyHandler(ctx context.Context, job *pb.Job, attempt int) error {
+func handle(ctx context.Context, job *pb.Job, attempt int) error {
 	switch job.Type {
 	case "flaky":
 		if attempt <= 2 {
@@ -50,155 +242,21 @@ func flakyHandler(ctx context.Context, job *pb.Job, attempt int) error {
 	case <-time.After(work):
 		return nil
 	case <-ctx.Done():
-		// Shutting down, or the lease was lost. Either way this attempt must
+		// Shutting down, or the job was taken away. Either way this attempt must
 		// not be reported as finished.
 		return ctx.Err()
 	}
 }
 
-// renewLease keeps a job's lease alive while the handler runs, beating a third
-// of the way through the lease so that a slow round trip or a missed beat does
-// not cost the worker its job. The server answers ok=false once the job has been
-// reassigned, which cancels the handler — the work belongs to somebody else now.
-//
-// A beat that cannot reach the server is simply retried on the next tick. If the
-// lease lapses in the meantime the completion is fenced, so the job still goes to
-// whoever owns it next.
-func renewLease(ctx context.Context, client pb.JobQueueClient, workerID, jobID string, lease time.Duration, cancel context.CancelCauseFunc) {
-	interval := lease / 3
-	if interval <= 0 {
-		interval = time.Second
+// wait pauses for d, or less if ctx is cancelled first.
+func wait(ctx context.Context, d time.Duration) {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
 	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		resp, err := client.Heartbeat(ctx, &pb.HeartbeatRequest{JobId: jobID, WorkerId: workerID})
-		if err != nil {
-			if ctx.Err() != nil {
-				return // the handler finished and stopped the heartbeat
-			}
-			fmt.Printf("[Worker] Heartbeat for [%s] failed: %v\n", shortID(jobID), err)
-			continue
-		}
-		if !resp.GetOk() {
-			cancel(errLeaseLost)
-			return
-		}
-	}
-}
-
-func main() {
-	workerID := uuid.New().String()[:8]
-	fmt.Printf("[Worker %s] Booting Distributed Node...\n", workerID)
-
-	conn, err := grpc.NewClient("localhost:4040", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Worker] Fatal: Failed to connect: %v\n", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-
-	client := pb.NewJobQueueClient(conn)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		fmt.Println("\n[Worker] Shutdown signal received. Draining current job...")
-		cancel()
-	}()
-
-	fmt.Println("[Worker] Listening for jobs...")
-
-	for {
-		if ctx.Err() != nil {
-			break
-		}
-
-		resp, err := client.Dequeue(ctx, &pb.DequeueRequest{WorkerId: workerID})
-		if err != nil {
-			if ctx.Err() != nil {
-				break
-			}
-			fmt.Printf("[Worker] Network error: %v\n", err)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		if resp.Error != "" {
-			fmt.Printf("[Worker] Server error: %s\n", resp.Error)
-			time.Sleep(2 * time.Second)
-			continue
-		}
-
-		job := resp.GetJob()
-		if job == nil {
-			time.Sleep(1 * time.Second) // idle backoff
-			continue
-		}
-
-		lease := time.Duration(resp.GetLeaseSeconds()) * time.Second
-		if lease <= 0 {
-			lease = defaultLeaseFor
-		}
-
-		attempt := int(job.RetryCount) + 1
-		fmt.Printf("[Worker %s] Processing Job [%s] type=%s attempt=%d/%d (lease %s)\n",
-			workerID, shortID(job.Id), job.Type, attempt, job.MaxRetries+1, lease)
-
-		// The handler runs under a context the heartbeat can cancel, so a worker
-		// that has lost its job stops working on it instead of racing the worker
-		// that now owns it.
-		workCtx, cancelWork := context.WithCancelCause(ctx)
-		go renewLease(workCtx, client, workerID, job.Id, lease, cancelWork)
-
-		err = flakyHandler(workCtx, job, attempt)
-		cancelWork(nil)
-
-		switch {
-		case ctx.Err() != nil:
-			// Shutting down. Leave the job to the lease reaper.
-		case errors.Is(context.Cause(workCtx), errLeaseLost):
-			fmt.Printf("[Worker %s] Job [%s] lease lost — abandoned\n", workerID, shortID(job.Id))
-		case err == nil:
-			completeResp, completeErr := client.Complete(ctx, &pb.CompleteRequest{JobId: job.Id, WorkerId: workerID})
-			if completeErr != nil || completeResp.GetError() != "" {
-				fmt.Printf("[Worker] Failed to COMPLETE Job [%s]: %v %s\n", shortID(job.Id), completeErr, completeResp.GetError())
-			} else {
-				fmt.Printf("[Worker %s] Job [%s] done ✓\n", workerID, shortID(job.Id))
-			}
-		default:
-			// The lesson: on failure we no longer drop the job. We report it,
-			// and the SERVER decides retry-vs-DLQ atomically.
-			failResp, failErr := client.Fail(ctx, &pb.FailRequest{
-				JobId:        job.Id,
-				ErrorMessage: err.Error(),
-				WorkerId:     workerID,
-			})
-			if failErr != nil || failResp.GetError() != "" {
-				fmt.Printf("[Worker] Failed to report failure for [%s]: %v %s\n", shortID(job.Id), failErr, failResp.GetError())
-				continue
-			}
-
-			if failResp.Retrying {
-				fmt.Printf("[Worker %s] Job [%s] failed → re-queued with backoff (attempt %d/%d)\n",
-					workerID, shortID(job.Id), attempt, job.MaxRetries+1)
-			} else {
-				fmt.Printf("[Worker %s] Job [%s] failed → moved to DLQ ✗\n", workerID, shortID(job.Id))
-			}
-		}
-	}
-	fmt.Println("[Worker] Engine shutdown complete.")
 }
 
 func shortID(id string) string {

@@ -86,6 +86,12 @@ func (q *Queue) Heartbeat(ctx context.Context, jobID, workerID string) (bool, er
 // often to renew.
 func (q *Queue) LeaseFor() time.Duration { return q.leaseFor }
 
+// NextVisible reports how long the queue has nothing to hand out for, and whether
+// it is holding anything pending at all.
+func (q *Queue) NextVisible(ctx context.Context) (time.Duration, bool, error) {
+	return q.store.NextVisible(ctx)
+}
+
 // ReapExpiredLeases hands jobs whose worker went quiet back to the queue.
 func (q *Queue) ReapExpiredLeases(ctx context.Context) (int64, error) {
 	return q.store.ReapExpiredLeases(ctx)

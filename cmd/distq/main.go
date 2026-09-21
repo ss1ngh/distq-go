@@ -63,7 +63,7 @@ func run() error {
 	}
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterJobQueueServer(grpcServer, server.New(q))
+	pb.RegisterJobQueueServer(grpcServer, server.New(ctx, q))
 
 	serveErr := make(chan error, 1)
 	go func() {

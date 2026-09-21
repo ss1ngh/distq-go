@@ -217,6 +217,27 @@ func (s *PostgresStore) HeartbeatJob(ctx context.Context, id, workerID string, l
 	return renewed > 0, nil
 }
 
+// NextVisible reports how long until the oldest pending job becomes claimable,
+// and whether the queue holds anything pending at all. The wait is measured by
+// the database, so a clock difference between the app and the database cannot
+// turn a sleep into a spin — and the app cannot outfox it by knowing that a row
+// is due but not claimable.
+func (s *PostgresStore) NextVisible(ctx context.Context) (time.Duration, bool, error) {
+	const query = `
+		SELECT coalesce(extract(epoch FROM (min(next_run_at) - CURRENT_TIMESTAMP)), 0)::float8,
+		       count(*) > 0
+		FROM jobs
+		WHERE state = 'pending'`
+
+	var seconds float64
+	var pending bool
+	if err := s.db.QueryRowContext(ctx, query).Scan(&seconds, &pending); err != nil {
+		return 0, false, fmt.Errorf("next visible job: %w", err)
+	}
+
+	return time.Duration(seconds * float64(time.Second)), pending, nil
+}
+
 // ReapExpiredLeases returns jobs whose worker stopped renewing its lease to the
 // queue so another worker can pick them up. A stall counts as an attempt, and
 // goes through the same retry-vs-DLQ decision as a reported failure — otherwise

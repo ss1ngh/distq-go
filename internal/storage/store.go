@@ -35,6 +35,12 @@ type Store interface {
 	// holding it, and reports false once the job is no longer theirs.
 	HeartbeatJob(ctx context.Context, id, workerID string, lease time.Duration) (bool, error)
 
+	// NextVisible reports how long until the oldest pending job becomes claimable
+	// — how long a dispatcher should sleep before looking again — and whether the
+	// queue holds anything pending at all. It is what lets a worker be pushed a
+	// delayed retry when it comes due instead of polling for it.
+	NextVisible(ctx context.Context) (wait time.Duration, pending bool, err error)
+
 	// ReapExpiredLeases returns jobs whose worker stopped renewing its lease to
 	// the queue, and reports how many it released. This is the only thing that
 	// has to run for a crashed worker's job to be picked up again.

@@ -5,19 +5,22 @@ package distq;
 //Tells the Go protoc plugin where to output the generated code package
 option go_package = "github.com/ss1ngh/distq-go/internal/pb";
 
+// Regenerate the Go bindings after editing this file with:
+//
+//   cd api/proto
+//   protoc --go_out=../../internal/pb --go_opt=paths=source_relative \
+//          --go-grpc_out=../../internal/pb --go-grpc_opt=paths=source_relative \
+//          distq.proto
+
 //JobQueue service exposes our core remote procedure calls over HTTP/2
 service JobQueue {
   rpc Enqueue (EnqueueRequest) returns (EnqueueResponse);
-  rpc Dequeue (DequeueRequest) returns (DequeueResponse);
-  // Complete marks a job as successfully finished (the old Ack, renamed:
-  // success and failure are both explicit outcomes now).
-  rpc Complete (CompleteRequest) returns (CompleteResponse);
-  // Fail reports a handler failure; the SERVER decides retry-vs-DLQ
-  // and tells the worker what happened via `retrying`.
-  rpc Fail (FailRequest) returns (FailResponse);
-  // Heartbeat renews a job's lease while its worker is still working on it, so
-  // a slow job is not mistaken for a dead worker.
-  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+
+  // JobStream is one long-lived connection per worker: the worker opens it with
+  // a Hello naming itself, is pushed jobs as they become available, and reports
+  // how each one went. Nothing is polled — an idle worker waits on the stream,
+  // which costs the queue no queries at all.
+  rpc JobStream (stream WorkerMessage) returns (stream ServerMessage);
 }
 
 // Core Job structure representing a background task
@@ -42,57 +45,78 @@ message EnqueueResponse {
   string error = 2;
 }
 
-// Dequeue RPC structures
-message DequeueRequest {
-  // Identifies the worker asking for work. Required: the job is leased to this
-  // id for a fixed period, and only this worker may then Complete or Fail it.
+// WorkerMessage is everything a worker sends up its stream.
+message WorkerMessage {
+  oneof message {
+    Hello hello = 1;
+    Heartbeat heartbeat = 2;
+    Completed completed = 3;
+    Failed failed = 4;
+  }
+}
+
+// Hello opens the stream and names the worker. Every job this stream is given is
+// leased to that id, and only that id may report on it.
+message Hello {
   string worker_id = 1;
 }
 
-message DequeueResponse {
-  Job job = 1;
-  string error = 2;
-  // How long the worker owns the job it was just handed, so it knows how often
-  // to renew.
-  int32 lease_seconds = 3;
-}
-
-// Complete RPC structures
-message CompleteRequest {
+// Heartbeat says "still working on this job": the server pushes the lease expiry
+// forward, and answers with Lost if the job has already moved on.
+message Heartbeat {
   string job_id = 1;
-  // The worker the job is leased to. Completion from anyone else is refused, so
-  // a worker that stalled past its lease cannot overwrite the result of the
-  // worker the job was handed to after it was reassigned.
-  string worker_id = 2;
 }
 
-message CompleteResponse {
-  string error = 1;
+// Completed is the worker's verdict on a job that succeeded.
+message Completed {
+  string job_id = 1;
 }
 
-// Fail RPC structures
-message FailRequest {
+// Failed is the worker's verdict on a job that failed. The worker does not decide
+// what happens next: the SERVER atomically chooses retry or dead-letter and
+// answers with a Result.
+message Failed {
   string job_id = 1;
   string error_message = 2;
-  // The worker the job is leased to; see CompleteRequest.worker_id.
-  string worker_id = 3;
 }
 
-message FailResponse {
-  // true = job was re-queued with backoff; false = job exceeded max retries and is in the DLQ.
-  bool retrying = 1;
-  string error = 2;
+// ServerMessage is everything the server sends down a worker's stream.
+message ServerMessage {
+  oneof message {
+    Assigned assigned = 1;
+    Result result = 2;
+    Lost lost = 3;
+  }
 }
 
-// Heartbeat RPC structures
-message HeartbeatRequest {
+// Assigned hands this worker a job, with the lease it may hold it for.
+message Assigned {
+  Job job = 1;
+  int32 lease_seconds = 2;
+}
+
+// Result answers a Completed or Failed report.
+message Result {
   string job_id = 1;
-  string worker_id = 2;
+  Outcome outcome = 2;
+  // error explains a refused report.
+  string error = 3;
 }
 
-message HeartbeatResponse {
-  // false = the lease is gone: the job was reassigned and this worker has to
-  // stop working on it.
-  bool ok = 1;
-  string error = 2;
+enum Outcome {
+  OUTCOME_UNSPECIFIED = 0;
+  // A Completed report that was recorded.
+  OUTCOME_ACCEPTED = 1;
+  // Refused: the job was not this worker's to finish any more.
+  OUTCOME_REFUSED = 2;
+  // A Failed report that was queued for another attempt.
+  OUTCOME_RETRYING = 3;
+  // A Failed report whose job exhausted its retries and is in the DLQ.
+  OUTCOME_DEAD_LETTERED = 4;
+}
+
+// Lost takes a job away from a worker that stalled past its lease, so it can stop
+// working on something that has already been handed to somebody else.
+message Lost {
+  string job_id = 1;
 }

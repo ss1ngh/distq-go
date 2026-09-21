@@ -21,6 +21,65 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type Outcome int32
+
+const (
+	Outcome_OUTCOME_UNSPECIFIED Outcome = 0
+	// A Completed report that was recorded.
+	Outcome_OUTCOME_ACCEPTED Outcome = 1
+	// Refused: the job was not this worker's to finish any more.
+	Outcome_OUTCOME_REFUSED Outcome = 2
+	// A Failed report that was queued for another attempt.
+	Outcome_OUTCOME_RETRYING Outcome = 3
+	// A Failed report whose job exhausted its retries and is in the DLQ.
+	Outcome_OUTCOME_DEAD_LETTERED Outcome = 4
+)
+
+// Enum value maps for Outcome.
+var (
+	Outcome_name = map[int32]string{
+		0: "OUTCOME_UNSPECIFIED",
+		1: "OUTCOME_ACCEPTED",
+		2: "OUTCOME_REFUSED",
+		3: "OUTCOME_RETRYING",
+		4: "OUTCOME_DEAD_LETTERED",
+	}
+	Outcome_value = map[string]int32{
+		"OUTCOME_UNSPECIFIED":   0,
+		"OUTCOME_ACCEPTED":      1,
+		"OUTCOME_REFUSED":       2,
+		"OUTCOME_RETRYING":      3,
+		"OUTCOME_DEAD_LETTERED": 4,
+	}
+)
+
+func (x Outcome) Enum() *Outcome {
+	p := new(Outcome)
+	*p = x
+	return p
+}
+
+func (x Outcome) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Outcome) Descriptor() protoreflect.EnumDescriptor {
+	return file_distq_proto_enumTypes[0].Descriptor()
+}
+
+func (Outcome) Type() protoreflect.EnumType {
+	return &file_distq_proto_enumTypes[0]
+}
+
+func (x Outcome) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Outcome.Descriptor instead.
+func (Outcome) EnumDescriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{0}
+}
+
 // Core Job structure representing a background task
 type Job struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
@@ -212,30 +271,34 @@ func (x *EnqueueResponse) GetError() string {
 	return ""
 }
 
-// Dequeue RPC structures
-type DequeueRequest struct {
+// WorkerMessage is everything a worker sends up its stream.
+type WorkerMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Identifies the worker asking for work. Required: the job is leased to this
-	// id for a fixed period, and only this worker may then Complete or Fail it.
-	WorkerId      string `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	// Types that are valid to be assigned to Message:
+	//
+	//	*WorkerMessage_Hello
+	//	*WorkerMessage_Heartbeat
+	//	*WorkerMessage_Completed
+	//	*WorkerMessage_Failed
+	Message       isWorkerMessage_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *DequeueRequest) Reset() {
-	*x = DequeueRequest{}
+func (x *WorkerMessage) Reset() {
+	*x = WorkerMessage{}
 	mi := &file_distq_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DequeueRequest) String() string {
+func (x *WorkerMessage) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DequeueRequest) ProtoMessage() {}
+func (*WorkerMessage) ProtoMessage() {}
 
-func (x *DequeueRequest) ProtoReflect() protoreflect.Message {
+func (x *WorkerMessage) ProtoReflect() protoreflect.Message {
 	mi := &file_distq_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -247,107 +310,106 @@ func (x *DequeueRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DequeueRequest.ProtoReflect.Descriptor instead.
-func (*DequeueRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use WorkerMessage.ProtoReflect.Descriptor instead.
+func (*WorkerMessage) Descriptor() ([]byte, []int) {
 	return file_distq_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *DequeueRequest) GetWorkerId() string {
+func (x *WorkerMessage) GetMessage() isWorkerMessage_Message {
 	if x != nil {
-		return x.WorkerId
-	}
-	return ""
-}
-
-type DequeueResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Job   *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
-	Error string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-	// How long the worker owns the job it was just handed, so it knows how often
-	// to renew.
-	LeaseSeconds  int32 `protobuf:"varint,3,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DequeueResponse) Reset() {
-	*x = DequeueResponse{}
-	mi := &file_distq_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DequeueResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DequeueResponse) ProtoMessage() {}
-
-func (x *DequeueResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_distq_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DequeueResponse.ProtoReflect.Descriptor instead.
-func (*DequeueResponse) Descriptor() ([]byte, []int) {
-	return file_distq_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *DequeueResponse) GetJob() *Job {
-	if x != nil {
-		return x.Job
+		return x.Message
 	}
 	return nil
 }
 
-func (x *DequeueResponse) GetError() string {
+func (x *WorkerMessage) GetHello() *Hello {
 	if x != nil {
-		return x.Error
+		if x, ok := x.Message.(*WorkerMessage_Hello); ok {
+			return x.Hello
+		}
 	}
-	return ""
+	return nil
 }
 
-func (x *DequeueResponse) GetLeaseSeconds() int32 {
+func (x *WorkerMessage) GetHeartbeat() *Heartbeat {
 	if x != nil {
-		return x.LeaseSeconds
+		if x, ok := x.Message.(*WorkerMessage_Heartbeat); ok {
+			return x.Heartbeat
+		}
 	}
-	return 0
+	return nil
 }
 
-// Complete RPC structures
-type CompleteRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	// The worker the job is leased to. Completion from anyone else is refused, so
-	// a worker that stalled past its lease cannot overwrite the result of the
-	// worker the job was handed to after it was reassigned.
-	WorkerId      string `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+func (x *WorkerMessage) GetCompleted() *Completed {
+	if x != nil {
+		if x, ok := x.Message.(*WorkerMessage_Completed); ok {
+			return x.Completed
+		}
+	}
+	return nil
+}
+
+func (x *WorkerMessage) GetFailed() *Failed {
+	if x != nil {
+		if x, ok := x.Message.(*WorkerMessage_Failed); ok {
+			return x.Failed
+		}
+	}
+	return nil
+}
+
+type isWorkerMessage_Message interface {
+	isWorkerMessage_Message()
+}
+
+type WorkerMessage_Hello struct {
+	Hello *Hello `protobuf:"bytes,1,opt,name=hello,proto3,oneof"`
+}
+
+type WorkerMessage_Heartbeat struct {
+	Heartbeat *Heartbeat `protobuf:"bytes,2,opt,name=heartbeat,proto3,oneof"`
+}
+
+type WorkerMessage_Completed struct {
+	Completed *Completed `protobuf:"bytes,3,opt,name=completed,proto3,oneof"`
+}
+
+type WorkerMessage_Failed struct {
+	Failed *Failed `protobuf:"bytes,4,opt,name=failed,proto3,oneof"`
+}
+
+func (*WorkerMessage_Hello) isWorkerMessage_Message() {}
+
+func (*WorkerMessage_Heartbeat) isWorkerMessage_Message() {}
+
+func (*WorkerMessage_Completed) isWorkerMessage_Message() {}
+
+func (*WorkerMessage_Failed) isWorkerMessage_Message() {}
+
+// Hello opens the stream and names the worker. Every job this stream is given is
+// leased to that id, and only that id may report on it.
+type Hello struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CompleteRequest) Reset() {
-	*x = CompleteRequest{}
-	mi := &file_distq_proto_msgTypes[5]
+func (x *Hello) Reset() {
+	*x = Hello{}
+	mi := &file_distq_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CompleteRequest) String() string {
+func (x *Hello) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CompleteRequest) ProtoMessage() {}
+func (*Hello) ProtoMessage() {}
 
-func (x *CompleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_distq_proto_msgTypes[5]
+func (x *Hello) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -358,47 +420,42 @@ func (x *CompleteRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CompleteRequest.ProtoReflect.Descriptor instead.
-func (*CompleteRequest) Descriptor() ([]byte, []int) {
-	return file_distq_proto_rawDescGZIP(), []int{5}
+// Deprecated: Use Hello.ProtoReflect.Descriptor instead.
+func (*Hello) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *CompleteRequest) GetJobId() string {
-	if x != nil {
-		return x.JobId
-	}
-	return ""
-}
-
-func (x *CompleteRequest) GetWorkerId() string {
+func (x *Hello) GetWorkerId() string {
 	if x != nil {
 		return x.WorkerId
 	}
 	return ""
 }
 
-type CompleteResponse struct {
+// Heartbeat says "still working on this job": the server pushes the lease expiry
+// forward, and answers with Lost if the job has already moved on.
+type Heartbeat struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Error         string                 `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *CompleteResponse) Reset() {
-	*x = CompleteResponse{}
-	mi := &file_distq_proto_msgTypes[6]
+func (x *Heartbeat) Reset() {
+	*x = Heartbeat{}
+	mi := &file_distq_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *CompleteResponse) String() string {
+func (x *Heartbeat) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*CompleteResponse) ProtoMessage() {}
+func (*Heartbeat) ProtoMessage() {}
 
-func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_distq_proto_msgTypes[6]
+func (x *Heartbeat) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -409,103 +466,145 @@ func (x *CompleteResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use CompleteResponse.ProtoReflect.Descriptor instead.
-func (*CompleteResponse) Descriptor() ([]byte, []int) {
-	return file_distq_proto_rawDescGZIP(), []int{6}
+// Deprecated: Use Heartbeat.ProtoReflect.Descriptor instead.
+func (*Heartbeat) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *CompleteResponse) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
-// Fail RPC structures
-type FailRequest struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	JobId        string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	ErrorMessage string                 `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	// The worker the job is leased to; see CompleteRequest.worker_id.
-	WorkerId      string `protobuf:"bytes,3,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FailRequest) Reset() {
-	*x = FailRequest{}
-	mi := &file_distq_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FailRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FailRequest) ProtoMessage() {}
-
-func (x *FailRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_distq_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FailRequest.ProtoReflect.Descriptor instead.
-func (*FailRequest) Descriptor() ([]byte, []int) {
-	return file_distq_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *FailRequest) GetJobId() string {
+func (x *Heartbeat) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *FailRequest) GetErrorMessage() string {
+// Completed is the worker's verdict on a job that succeeded.
+type Completed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Completed) Reset() {
+	*x = Completed{}
+	mi := &file_distq_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Completed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Completed) ProtoMessage() {}
+
+func (x *Completed) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Completed.ProtoReflect.Descriptor instead.
+func (*Completed) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *Completed) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+// Failed is the worker's verdict on a job that failed. The worker does not decide
+// what happens next: the SERVER atomically chooses retry or dead-letter and
+// answers with a Result.
+type Failed struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	ErrorMessage  string                 `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Failed) Reset() {
+	*x = Failed{}
+	mi := &file_distq_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Failed) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Failed) ProtoMessage() {}
+
+func (x *Failed) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Failed.ProtoReflect.Descriptor instead.
+func (*Failed) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *Failed) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *Failed) GetErrorMessage() string {
 	if x != nil {
 		return x.ErrorMessage
 	}
 	return ""
 }
 
-func (x *FailRequest) GetWorkerId() string {
-	if x != nil {
-		return x.WorkerId
-	}
-	return ""
-}
-
-type FailResponse struct {
+// ServerMessage is everything the server sends down a worker's stream.
+type ServerMessage struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// true = job was re-queued with backoff; false = job exceeded max retries and is in the DLQ.
-	Retrying      bool   `protobuf:"varint,1,opt,name=retrying,proto3" json:"retrying,omitempty"`
-	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// Types that are valid to be assigned to Message:
+	//
+	//	*ServerMessage_Assigned
+	//	*ServerMessage_Result
+	//	*ServerMessage_Lost
+	Message       isServerMessage_Message `protobuf_oneof:"message"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *FailResponse) Reset() {
-	*x = FailResponse{}
+func (x *ServerMessage) Reset() {
+	*x = ServerMessage{}
 	mi := &file_distq_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *FailResponse) String() string {
+func (x *ServerMessage) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*FailResponse) ProtoMessage() {}
+func (*ServerMessage) ProtoMessage() {}
 
-func (x *FailResponse) ProtoReflect() protoreflect.Message {
+func (x *ServerMessage) ProtoReflect() protoreflect.Message {
 	mi := &file_distq_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -517,48 +616,90 @@ func (x *FailResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use FailResponse.ProtoReflect.Descriptor instead.
-func (*FailResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use ServerMessage.ProtoReflect.Descriptor instead.
+func (*ServerMessage) Descriptor() ([]byte, []int) {
 	return file_distq_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *FailResponse) GetRetrying() bool {
+func (x *ServerMessage) GetMessage() isServerMessage_Message {
 	if x != nil {
-		return x.Retrying
+		return x.Message
 	}
-	return false
+	return nil
 }
 
-func (x *FailResponse) GetError() string {
+func (x *ServerMessage) GetAssigned() *Assigned {
 	if x != nil {
-		return x.Error
+		if x, ok := x.Message.(*ServerMessage_Assigned); ok {
+			return x.Assigned
+		}
 	}
-	return ""
+	return nil
 }
 
-// Heartbeat RPC structures
-type HeartbeatRequest struct {
+func (x *ServerMessage) GetResult() *Result {
+	if x != nil {
+		if x, ok := x.Message.(*ServerMessage_Result); ok {
+			return x.Result
+		}
+	}
+	return nil
+}
+
+func (x *ServerMessage) GetLost() *Lost {
+	if x != nil {
+		if x, ok := x.Message.(*ServerMessage_Lost); ok {
+			return x.Lost
+		}
+	}
+	return nil
+}
+
+type isServerMessage_Message interface {
+	isServerMessage_Message()
+}
+
+type ServerMessage_Assigned struct {
+	Assigned *Assigned `protobuf:"bytes,1,opt,name=assigned,proto3,oneof"`
+}
+
+type ServerMessage_Result struct {
+	Result *Result `protobuf:"bytes,2,opt,name=result,proto3,oneof"`
+}
+
+type ServerMessage_Lost struct {
+	Lost *Lost `protobuf:"bytes,3,opt,name=lost,proto3,oneof"`
+}
+
+func (*ServerMessage_Assigned) isServerMessage_Message() {}
+
+func (*ServerMessage_Result) isServerMessage_Message() {}
+
+func (*ServerMessage_Lost) isServerMessage_Message() {}
+
+// Assigned hands this worker a job, with the lease it may hold it for.
+type Assigned struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	LeaseSeconds  int32                  `protobuf:"varint,2,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HeartbeatRequest) Reset() {
-	*x = HeartbeatRequest{}
+func (x *Assigned) Reset() {
+	*x = Assigned{}
 	mi := &file_distq_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HeartbeatRequest) String() string {
+func (x *Assigned) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HeartbeatRequest) ProtoMessage() {}
+func (*Assigned) ProtoMessage() {}
 
-func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
+func (x *Assigned) ProtoReflect() protoreflect.Message {
 	mi := &file_distq_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -570,50 +711,111 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
-func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use Assigned.ProtoReflect.Descriptor instead.
+func (*Assigned) Descriptor() ([]byte, []int) {
 	return file_distq_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *HeartbeatRequest) GetJobId() string {
+func (x *Assigned) GetJob() *Job {
+	if x != nil {
+		return x.Job
+	}
+	return nil
+}
+
+func (x *Assigned) GetLeaseSeconds() int32 {
+	if x != nil {
+		return x.LeaseSeconds
+	}
+	return 0
+}
+
+// Result answers a Completed or Failed report.
+type Result struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	JobId   string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Outcome Outcome                `protobuf:"varint,2,opt,name=outcome,proto3,enum=distq.Outcome" json:"outcome,omitempty"`
+	// error explains a refused report.
+	Error         string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Result) Reset() {
+	*x = Result{}
+	mi := &file_distq_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Result) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Result) ProtoMessage() {}
+
+func (x *Result) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Result.ProtoReflect.Descriptor instead.
+func (*Result) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *Result) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *HeartbeatRequest) GetWorkerId() string {
+func (x *Result) GetOutcome() Outcome {
 	if x != nil {
-		return x.WorkerId
+		return x.Outcome
+	}
+	return Outcome_OUTCOME_UNSPECIFIED
+}
+
+func (x *Result) GetError() string {
+	if x != nil {
+		return x.Error
 	}
 	return ""
 }
 
-type HeartbeatResponse struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// false = the lease is gone: the job was reassigned and this worker has to
-	// stop working on it.
-	Ok            bool   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+// Lost takes a job away from a worker that stalled past its lease, so it can stop
+// working on something that has already been handed to somebody else.
+type Lost struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *HeartbeatResponse) Reset() {
-	*x = HeartbeatResponse{}
-	mi := &file_distq_proto_msgTypes[10]
+func (x *Lost) Reset() {
+	*x = Lost{}
+	mi := &file_distq_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *HeartbeatResponse) String() string {
+func (x *Lost) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*HeartbeatResponse) ProtoMessage() {}
+func (*Lost) ProtoMessage() {}
 
-func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_distq_proto_msgTypes[10]
+func (x *Lost) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -624,21 +826,14 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
-func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_distq_proto_rawDescGZIP(), []int{10}
+// Deprecated: Use Lost.ProtoReflect.Descriptor instead.
+func (*Lost) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *HeartbeatResponse) GetOk() bool {
+func (x *Lost) GetJobId() string {
 	if x != nil {
-		return x.Ok
-	}
-	return false
-}
-
-func (x *HeartbeatResponse) GetError() string {
-	if x != nil {
-		return x.Error
+		return x.JobId
 	}
 	return ""
 }
@@ -663,38 +858,46 @@ const file_distq_proto_rawDesc = "" +
 	".distq.JobR\x03job\">\n" +
 	"\x0fEnqueueResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"-\n" +
-	"\x0eDequeueRequest\x12\x1b\n" +
-	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"j\n" +
-	"\x0fDequeueResponse\x12\x1c\n" +
-	"\x03job\x18\x01 \x01(\v2\n" +
-	".distq.JobR\x03job\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\x12#\n" +
-	"\rlease_seconds\x18\x03 \x01(\x05R\fleaseSeconds\"E\n" +
-	"\x0fCompleteRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
-	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"(\n" +
-	"\x10CompleteResponse\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error\"f\n" +
-	"\vFailRequest\x12\x15\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\xcd\x01\n" +
+	"\rWorkerMessage\x12$\n" +
+	"\x05hello\x18\x01 \x01(\v2\f.distq.HelloH\x00R\x05hello\x120\n" +
+	"\theartbeat\x18\x02 \x01(\v2\x10.distq.HeartbeatH\x00R\theartbeat\x120\n" +
+	"\tcompleted\x18\x03 \x01(\v2\x10.distq.CompletedH\x00R\tcompleted\x12'\n" +
+	"\x06failed\x18\x04 \x01(\v2\r.distq.FailedH\x00R\x06failedB\t\n" +
+	"\amessage\"$\n" +
+	"\x05Hello\x12\x1b\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"\"\n" +
+	"\tHeartbeat\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\"\n" +
+	"\tCompleted\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"D\n" +
+	"\x06Failed\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12#\n" +
-	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\x12\x1b\n" +
-	"\tworker_id\x18\x03 \x01(\tR\bworkerId\"@\n" +
-	"\fFailResponse\x12\x1a\n" +
-	"\bretrying\x18\x01 \x01(\bR\bretrying\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"F\n" +
-	"\x10HeartbeatRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
-	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"9\n" +
-	"\x11HeartbeatResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error2\xac\x02\n" +
+	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\"\x95\x01\n" +
+	"\rServerMessage\x12-\n" +
+	"\bassigned\x18\x01 \x01(\v2\x0f.distq.AssignedH\x00R\bassigned\x12'\n" +
+	"\x06result\x18\x02 \x01(\v2\r.distq.ResultH\x00R\x06result\x12!\n" +
+	"\x04lost\x18\x03 \x01(\v2\v.distq.LostH\x00R\x04lostB\t\n" +
+	"\amessage\"M\n" +
+	"\bAssigned\x12\x1c\n" +
+	"\x03job\x18\x01 \x01(\v2\n" +
+	".distq.JobR\x03job\x12#\n" +
+	"\rlease_seconds\x18\x02 \x01(\x05R\fleaseSeconds\"_\n" +
+	"\x06Result\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12(\n" +
+	"\aoutcome\x18\x02 \x01(\x0e2\x0e.distq.OutcomeR\aoutcome\x12\x14\n" +
+	"\x05error\x18\x03 \x01(\tR\x05error\"\x1d\n" +
+	"\x04Lost\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId*~\n" +
+	"\aOutcome\x12\x17\n" +
+	"\x13OUTCOME_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10OUTCOME_ACCEPTED\x10\x01\x12\x13\n" +
+	"\x0fOUTCOME_REFUSED\x10\x02\x12\x14\n" +
+	"\x10OUTCOME_RETRYING\x10\x03\x12\x19\n" +
+	"\x15OUTCOME_DEAD_LETTERED\x10\x042\x81\x01\n" +
 	"\bJobQueue\x128\n" +
-	"\aEnqueue\x12\x15.distq.EnqueueRequest\x1a\x16.distq.EnqueueResponse\x128\n" +
-	"\aDequeue\x12\x15.distq.DequeueRequest\x1a\x16.distq.DequeueResponse\x12;\n" +
-	"\bComplete\x12\x16.distq.CompleteRequest\x1a\x17.distq.CompleteResponse\x12/\n" +
-	"\x04Fail\x12\x12.distq.FailRequest\x1a\x13.distq.FailResponse\x12>\n" +
-	"\tHeartbeat\x12\x17.distq.HeartbeatRequest\x1a\x18.distq.HeartbeatResponseB(Z&github.com/ss1ngh/distq-go/internal/pbb\x06proto3"
+	"\aEnqueue\x12\x15.distq.EnqueueRequest\x1a\x16.distq.EnqueueResponse\x12;\n" +
+	"\tJobStream\x12\x14.distq.WorkerMessage\x1a\x14.distq.ServerMessage(\x010\x01B(Z&github.com/ss1ngh/distq-go/internal/pbb\x06proto3"
 
 var (
 	file_distq_proto_rawDescOnce sync.Once
@@ -708,38 +911,43 @@ func file_distq_proto_rawDescGZIP() []byte {
 	return file_distq_proto_rawDescData
 }
 
-var file_distq_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_distq_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_distq_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_distq_proto_goTypes = []any{
-	(*Job)(nil),               // 0: distq.Job
-	(*EnqueueRequest)(nil),    // 1: distq.EnqueueRequest
-	(*EnqueueResponse)(nil),   // 2: distq.EnqueueResponse
-	(*DequeueRequest)(nil),    // 3: distq.DequeueRequest
-	(*DequeueResponse)(nil),   // 4: distq.DequeueResponse
-	(*CompleteRequest)(nil),   // 5: distq.CompleteRequest
-	(*CompleteResponse)(nil),  // 6: distq.CompleteResponse
-	(*FailRequest)(nil),       // 7: distq.FailRequest
-	(*FailResponse)(nil),      // 8: distq.FailResponse
-	(*HeartbeatRequest)(nil),  // 9: distq.HeartbeatRequest
-	(*HeartbeatResponse)(nil), // 10: distq.HeartbeatResponse
+	(Outcome)(0),            // 0: distq.Outcome
+	(*Job)(nil),             // 1: distq.Job
+	(*EnqueueRequest)(nil),  // 2: distq.EnqueueRequest
+	(*EnqueueResponse)(nil), // 3: distq.EnqueueResponse
+	(*WorkerMessage)(nil),   // 4: distq.WorkerMessage
+	(*Hello)(nil),           // 5: distq.Hello
+	(*Heartbeat)(nil),       // 6: distq.Heartbeat
+	(*Completed)(nil),       // 7: distq.Completed
+	(*Failed)(nil),          // 8: distq.Failed
+	(*ServerMessage)(nil),   // 9: distq.ServerMessage
+	(*Assigned)(nil),        // 10: distq.Assigned
+	(*Result)(nil),          // 11: distq.Result
+	(*Lost)(nil),            // 12: distq.Lost
 }
 var file_distq_proto_depIdxs = []int32{
-	0,  // 0: distq.EnqueueRequest.job:type_name -> distq.Job
-	0,  // 1: distq.DequeueResponse.job:type_name -> distq.Job
-	1,  // 2: distq.JobQueue.Enqueue:input_type -> distq.EnqueueRequest
-	3,  // 3: distq.JobQueue.Dequeue:input_type -> distq.DequeueRequest
-	5,  // 4: distq.JobQueue.Complete:input_type -> distq.CompleteRequest
-	7,  // 5: distq.JobQueue.Fail:input_type -> distq.FailRequest
-	9,  // 6: distq.JobQueue.Heartbeat:input_type -> distq.HeartbeatRequest
-	2,  // 7: distq.JobQueue.Enqueue:output_type -> distq.EnqueueResponse
-	4,  // 8: distq.JobQueue.Dequeue:output_type -> distq.DequeueResponse
-	6,  // 9: distq.JobQueue.Complete:output_type -> distq.CompleteResponse
-	8,  // 10: distq.JobQueue.Fail:output_type -> distq.FailResponse
-	10, // 11: distq.JobQueue.Heartbeat:output_type -> distq.HeartbeatResponse
-	7,  // [7:12] is the sub-list for method output_type
-	2,  // [2:7] is the sub-list for method input_type
-	2,  // [2:2] is the sub-list for extension type_name
-	2,  // [2:2] is the sub-list for extension extendee
-	0,  // [0:2] is the sub-list for field type_name
+	1,  // 0: distq.EnqueueRequest.job:type_name -> distq.Job
+	5,  // 1: distq.WorkerMessage.hello:type_name -> distq.Hello
+	6,  // 2: distq.WorkerMessage.heartbeat:type_name -> distq.Heartbeat
+	7,  // 3: distq.WorkerMessage.completed:type_name -> distq.Completed
+	8,  // 4: distq.WorkerMessage.failed:type_name -> distq.Failed
+	10, // 5: distq.ServerMessage.assigned:type_name -> distq.Assigned
+	11, // 6: distq.ServerMessage.result:type_name -> distq.Result
+	12, // 7: distq.ServerMessage.lost:type_name -> distq.Lost
+	1,  // 8: distq.Assigned.job:type_name -> distq.Job
+	0,  // 9: distq.Result.outcome:type_name -> distq.Outcome
+	2,  // 10: distq.JobQueue.Enqueue:input_type -> distq.EnqueueRequest
+	4,  // 11: distq.JobQueue.JobStream:input_type -> distq.WorkerMessage
+	3,  // 12: distq.JobQueue.Enqueue:output_type -> distq.EnqueueResponse
+	9,  // 13: distq.JobQueue.JobStream:output_type -> distq.ServerMessage
+	12, // [12:14] is the sub-list for method output_type
+	10, // [10:12] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_distq_proto_init() }
@@ -747,18 +955,30 @@ func file_distq_proto_init() {
 	if File_distq_proto != nil {
 		return
 	}
+	file_distq_proto_msgTypes[3].OneofWrappers = []any{
+		(*WorkerMessage_Hello)(nil),
+		(*WorkerMessage_Heartbeat)(nil),
+		(*WorkerMessage_Completed)(nil),
+		(*WorkerMessage_Failed)(nil),
+	}
+	file_distq_proto_msgTypes[8].OneofWrappers = []any{
+		(*ServerMessage_Assigned)(nil),
+		(*ServerMessage_Result)(nil),
+		(*ServerMessage_Lost)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_distq_proto_rawDesc), len(file_distq_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   11,
+			NumEnums:      1,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_distq_proto_goTypes,
 		DependencyIndexes: file_distq_proto_depIdxs,
+		EnumInfos:         file_distq_proto_enumTypes,
 		MessageInfos:      file_distq_proto_msgTypes,
 	}.Build()
 	File_distq_proto = out.File
