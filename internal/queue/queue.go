@@ -76,6 +76,16 @@ func (q *Queue) Fail(ctx context.Context, jobID, workerID, errMsg string) (retry
 	return q.store.FailJob(ctx, jobID, workerID, errMsg, q.retryDelay)
 }
 
+// Heartbeat renews the lease on a job the worker is still working on, and
+// reports false once the job belongs to somebody else.
+func (q *Queue) Heartbeat(ctx context.Context, jobID, workerID string) (bool, error) {
+	return q.store.HeartbeatJob(ctx, jobID, workerID, q.leaseFor)
+}
+
+// LeaseFor is how long a claim is good for, so the server can tell workers how
+// often to renew.
+func (q *Queue) LeaseFor() time.Duration { return q.leaseFor }
+
 // ReapExpiredLeases hands jobs whose worker went quiet back to the queue.
 func (q *Queue) ReapExpiredLeases(ctx context.Context) (int64, error) {
 	return q.store.ReapExpiredLeases(ctx)

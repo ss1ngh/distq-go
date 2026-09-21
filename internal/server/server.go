@@ -58,7 +58,9 @@ func (s *Server) Dequeue(ctx context.Context, req *pb.DequeueRequest) (*pb.Deque
 		return &pb.DequeueResponse{Error: err.Error()}, nil
 	}
 
-	return &pb.DequeueResponse{Job: job}, nil
+	// Tell the worker how long its claim lasts, so it can renew before the
+	// reaper decides it has died.
+	return &pb.DequeueResponse{Job: job, LeaseSeconds: int32(s.q.LeaseFor().Seconds())}, nil
 }
 
 // Complete marks a job as successfully finished, on behalf of the worker holding
@@ -92,6 +94,23 @@ func (s *Server) Fail(ctx context.Context, req *pb.FailRequest) (*pb.FailRespons
 	}
 
 	return &pb.FailResponse{Retrying: retrying}, nil
+}
+
+// Heartbeat renews a job's lease on behalf of the worker holding it. A false
+// answer is not an error: it tells a worker that stalled past its lease to stop
+// working on a job that has already been handed to somebody else.
+func (s *Server) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	workerID := req.GetWorkerId()
+	if workerID == "" {
+		return &pb.HeartbeatResponse{Error: errNoWorkerID}, nil
+	}
+
+	renewed, err := s.q.Heartbeat(ctx, req.GetJobId(), workerID)
+	if err != nil {
+		return &pb.HeartbeatResponse{Error: err.Error()}, nil
+	}
+
+	return &pb.HeartbeatResponse{Ok: renewed}, nil
 }
 
 // logFenced notes that a late result was refused. That is the fence working, not

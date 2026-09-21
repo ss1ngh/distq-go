@@ -15,6 +15,9 @@ service JobQueue {
   // Fail reports a handler failure; the SERVER decides retry-vs-DLQ
   // and tells the worker what happened via `retrying`.
   rpc Fail (FailRequest) returns (FailResponse);
+  // Heartbeat renews a job's lease while its worker is still working on it, so
+  // a slow job is not mistaken for a dead worker.
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
 }
 
 // Core Job structure representing a background task
@@ -49,6 +52,9 @@ message DequeueRequest {
 message DequeueResponse {
   Job job = 1;
   string error = 2;
+  // How long the worker owns the job it was just handed, so it knows how often
+  // to renew.
+  int32 lease_seconds = 3;
 }
 
 // Complete RPC structures
@@ -75,5 +81,18 @@ message FailRequest {
 message FailResponse {
   // true = job was re-queued with backoff; false = job exceeded max retries and is in the DLQ.
   bool retrying = 1;
+  string error = 2;
+}
+
+// Heartbeat RPC structures
+message HeartbeatRequest {
+  string job_id = 1;
+  string worker_id = 2;
+}
+
+message HeartbeatResponse {
+  // false = the lease is gone: the job was reassigned and this worker has to
+  // stop working on it.
+  bool ok = 1;
   string error = 2;
 }

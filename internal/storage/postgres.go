@@ -195,6 +195,28 @@ func (s *PostgresStore) FailJob(ctx context.Context, id, workerID, errMsg string
 	return state == "pending", nil
 }
 
+// HeartbeatJob pushes the lease expiry of a job the worker is still working on
+// forward, so a job that takes longer than one lease is not mistaken for a dead
+// worker's. It is fenced on worker_id like Complete, and reports false once the
+// job has moved on.
+func (s *PostgresStore) HeartbeatJob(ctx context.Context, id, workerID string, lease time.Duration) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs
+		 SET lease_expires_at = CURRENT_TIMESTAMP + make_interval(secs => $3)
+		 WHERE id = $1 AND worker_id = $2 AND state = 'processing'`, id, workerID, lease.Seconds())
+	if err != nil {
+		return false, fmt.Errorf("heartbeat job: %w", err)
+	}
+
+	// No row matched: the lease is no longer ours, so the worker has to stop.
+	// Not an error — it is the answer.
+	renewed, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("rows affected: %w", err)
+	}
+	return renewed > 0, nil
+}
+
 // ReapExpiredLeases returns jobs whose worker stopped renewing its lease to the
 // queue so another worker can pick them up. A stall counts as an attempt, and
 // goes through the same retry-vs-DLQ decision as a reported failure — otherwise

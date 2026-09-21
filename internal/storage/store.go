@@ -31,6 +31,10 @@ type Store interface {
 	// true when the job was re-queued for another attempt.
 	FailJob(ctx context.Context, id, workerID, errMsg string, baseDelay time.Duration) (retrying bool, err error)
 
+	// HeartbeatJob pushes a job's lease expiry forward on behalf of the worker
+	// holding it, and reports false once the job is no longer theirs.
+	HeartbeatJob(ctx context.Context, id, workerID string, lease time.Duration) (bool, error)
+
 	// ReapExpiredLeases returns jobs whose worker stopped renewing its lease to
 	// the queue, and reports how many it released. This is the only thing that
 	// has to run for a crashed worker's job to be picked up again.

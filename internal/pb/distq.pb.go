@@ -260,9 +260,12 @@ func (x *DequeueRequest) GetWorkerId() string {
 }
 
 type DequeueResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Job           *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
-	Error         string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Job   *Job                   `protobuf:"bytes,1,opt,name=job,proto3" json:"job,omitempty"`
+	Error string                 `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// How long the worker owns the job it was just handed, so it knows how often
+	// to renew.
+	LeaseSeconds  int32 `protobuf:"varint,3,opt,name=lease_seconds,json=leaseSeconds,proto3" json:"lease_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -309,6 +312,13 @@ func (x *DequeueResponse) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *DequeueResponse) GetLeaseSeconds() int32 {
+	if x != nil {
+		return x.LeaseSeconds
+	}
+	return 0
 }
 
 // Complete RPC structures
@@ -526,6 +536,113 @@ func (x *FailResponse) GetError() string {
 	return ""
 }
 
+// Heartbeat RPC structures
+type HeartbeatRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	WorkerId      string                 `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatRequest) Reset() {
+	*x = HeartbeatRequest{}
+	mi := &file_distq_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatRequest) ProtoMessage() {}
+
+func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
+func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *HeartbeatRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *HeartbeatRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
+	}
+	return ""
+}
+
+type HeartbeatResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// false = the lease is gone: the job was reassigned and this worker has to
+	// stop working on it.
+	Ok            bool   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HeartbeatResponse) Reset() {
+	*x = HeartbeatResponse{}
+	mi := &file_distq_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HeartbeatResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HeartbeatResponse) ProtoMessage() {}
+
+func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_distq_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
+func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
+	return file_distq_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *HeartbeatResponse) GetOk() bool {
+	if x != nil {
+		return x.Ok
+	}
+	return false
+}
+
+func (x *HeartbeatResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 var File_distq_proto protoreflect.FileDescriptor
 
 const file_distq_proto_rawDesc = "" +
@@ -548,11 +665,12 @@ const file_distq_proto_rawDesc = "" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\"-\n" +
 	"\x0eDequeueRequest\x12\x1b\n" +
-	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"E\n" +
+	"\tworker_id\x18\x01 \x01(\tR\bworkerId\"j\n" +
 	"\x0fDequeueResponse\x12\x1c\n" +
 	"\x03job\x18\x01 \x01(\v2\n" +
 	".distq.JobR\x03job\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"E\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\x12#\n" +
+	"\rlease_seconds\x18\x03 \x01(\x05R\fleaseSeconds\"E\n" +
 	"\x0fCompleteRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
 	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"(\n" +
@@ -564,12 +682,19 @@ const file_distq_proto_rawDesc = "" +
 	"\tworker_id\x18\x03 \x01(\tR\bworkerId\"@\n" +
 	"\fFailResponse\x12\x1a\n" +
 	"\bretrying\x18\x01 \x01(\bR\bretrying\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error2\xec\x01\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"F\n" +
+	"\x10HeartbeatRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"9\n" +
+	"\x11HeartbeatResponse\x12\x0e\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error2\xac\x02\n" +
 	"\bJobQueue\x128\n" +
 	"\aEnqueue\x12\x15.distq.EnqueueRequest\x1a\x16.distq.EnqueueResponse\x128\n" +
 	"\aDequeue\x12\x15.distq.DequeueRequest\x1a\x16.distq.DequeueResponse\x12;\n" +
 	"\bComplete\x12\x16.distq.CompleteRequest\x1a\x17.distq.CompleteResponse\x12/\n" +
-	"\x04Fail\x12\x12.distq.FailRequest\x1a\x13.distq.FailResponseB(Z&github.com/ss1ngh/distq-go/internal/pbb\x06proto3"
+	"\x04Fail\x12\x12.distq.FailRequest\x1a\x13.distq.FailResponse\x12>\n" +
+	"\tHeartbeat\x12\x17.distq.HeartbeatRequest\x1a\x18.distq.HeartbeatResponseB(Z&github.com/ss1ngh/distq-go/internal/pbb\x06proto3"
 
 var (
 	file_distq_proto_rawDescOnce sync.Once
@@ -583,34 +708,38 @@ func file_distq_proto_rawDescGZIP() []byte {
 	return file_distq_proto_rawDescData
 }
 
-var file_distq_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_distq_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_distq_proto_goTypes = []any{
-	(*Job)(nil),              // 0: distq.Job
-	(*EnqueueRequest)(nil),   // 1: distq.EnqueueRequest
-	(*EnqueueResponse)(nil),  // 2: distq.EnqueueResponse
-	(*DequeueRequest)(nil),   // 3: distq.DequeueRequest
-	(*DequeueResponse)(nil),  // 4: distq.DequeueResponse
-	(*CompleteRequest)(nil),  // 5: distq.CompleteRequest
-	(*CompleteResponse)(nil), // 6: distq.CompleteResponse
-	(*FailRequest)(nil),      // 7: distq.FailRequest
-	(*FailResponse)(nil),     // 8: distq.FailResponse
+	(*Job)(nil),               // 0: distq.Job
+	(*EnqueueRequest)(nil),    // 1: distq.EnqueueRequest
+	(*EnqueueResponse)(nil),   // 2: distq.EnqueueResponse
+	(*DequeueRequest)(nil),    // 3: distq.DequeueRequest
+	(*DequeueResponse)(nil),   // 4: distq.DequeueResponse
+	(*CompleteRequest)(nil),   // 5: distq.CompleteRequest
+	(*CompleteResponse)(nil),  // 6: distq.CompleteResponse
+	(*FailRequest)(nil),       // 7: distq.FailRequest
+	(*FailResponse)(nil),      // 8: distq.FailResponse
+	(*HeartbeatRequest)(nil),  // 9: distq.HeartbeatRequest
+	(*HeartbeatResponse)(nil), // 10: distq.HeartbeatResponse
 }
 var file_distq_proto_depIdxs = []int32{
-	0, // 0: distq.EnqueueRequest.job:type_name -> distq.Job
-	0, // 1: distq.DequeueResponse.job:type_name -> distq.Job
-	1, // 2: distq.JobQueue.Enqueue:input_type -> distq.EnqueueRequest
-	3, // 3: distq.JobQueue.Dequeue:input_type -> distq.DequeueRequest
-	5, // 4: distq.JobQueue.Complete:input_type -> distq.CompleteRequest
-	7, // 5: distq.JobQueue.Fail:input_type -> distq.FailRequest
-	2, // 6: distq.JobQueue.Enqueue:output_type -> distq.EnqueueResponse
-	4, // 7: distq.JobQueue.Dequeue:output_type -> distq.DequeueResponse
-	6, // 8: distq.JobQueue.Complete:output_type -> distq.CompleteResponse
-	8, // 9: distq.JobQueue.Fail:output_type -> distq.FailResponse
-	6, // [6:10] is the sub-list for method output_type
-	2, // [2:6] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	0,  // 0: distq.EnqueueRequest.job:type_name -> distq.Job
+	0,  // 1: distq.DequeueResponse.job:type_name -> distq.Job
+	1,  // 2: distq.JobQueue.Enqueue:input_type -> distq.EnqueueRequest
+	3,  // 3: distq.JobQueue.Dequeue:input_type -> distq.DequeueRequest
+	5,  // 4: distq.JobQueue.Complete:input_type -> distq.CompleteRequest
+	7,  // 5: distq.JobQueue.Fail:input_type -> distq.FailRequest
+	9,  // 6: distq.JobQueue.Heartbeat:input_type -> distq.HeartbeatRequest
+	2,  // 7: distq.JobQueue.Enqueue:output_type -> distq.EnqueueResponse
+	4,  // 8: distq.JobQueue.Dequeue:output_type -> distq.DequeueResponse
+	6,  // 9: distq.JobQueue.Complete:output_type -> distq.CompleteResponse
+	8,  // 10: distq.JobQueue.Fail:output_type -> distq.FailResponse
+	10, // 11: distq.JobQueue.Heartbeat:output_type -> distq.HeartbeatResponse
+	7,  // [7:12] is the sub-list for method output_type
+	2,  // [2:7] is the sub-list for method input_type
+	2,  // [2:2] is the sub-list for extension type_name
+	2,  // [2:2] is the sub-list for extension extendee
+	0,  // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_distq_proto_init() }
@@ -624,7 +753,7 @@ func file_distq_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_distq_proto_rawDesc), len(file_distq_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

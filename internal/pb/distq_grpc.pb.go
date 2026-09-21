@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	JobQueue_Enqueue_FullMethodName  = "/distq.JobQueue/Enqueue"
-	JobQueue_Dequeue_FullMethodName  = "/distq.JobQueue/Dequeue"
-	JobQueue_Complete_FullMethodName = "/distq.JobQueue/Complete"
-	JobQueue_Fail_FullMethodName     = "/distq.JobQueue/Fail"
+	JobQueue_Enqueue_FullMethodName   = "/distq.JobQueue/Enqueue"
+	JobQueue_Dequeue_FullMethodName   = "/distq.JobQueue/Dequeue"
+	JobQueue_Complete_FullMethodName  = "/distq.JobQueue/Complete"
+	JobQueue_Fail_FullMethodName      = "/distq.JobQueue/Fail"
+	JobQueue_Heartbeat_FullMethodName = "/distq.JobQueue/Heartbeat"
 )
 
 // JobQueueClient is the client API for JobQueue service.
@@ -39,6 +40,9 @@ type JobQueueClient interface {
 	// Fail reports a handler failure; the SERVER decides retry-vs-DLQ
 	// and tells the worker what happened via `retrying`.
 	Fail(ctx context.Context, in *FailRequest, opts ...grpc.CallOption) (*FailResponse, error)
+	// Heartbeat renews a job's lease while its worker is still working on it, so
+	// a slow job is not mistaken for a dead worker.
+	Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error)
 }
 
 type jobQueueClient struct {
@@ -89,6 +93,16 @@ func (c *jobQueueClient) Fail(ctx context.Context, in *FailRequest, opts ...grpc
 	return out, nil
 }
 
+func (c *jobQueueClient) Heartbeat(ctx context.Context, in *HeartbeatRequest, opts ...grpc.CallOption) (*HeartbeatResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HeartbeatResponse)
+	err := c.cc.Invoke(ctx, JobQueue_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // JobQueueServer is the server API for JobQueue service.
 // All implementations must embed UnimplementedJobQueueServer
 // for forward compatibility.
@@ -103,6 +117,9 @@ type JobQueueServer interface {
 	// Fail reports a handler failure; the SERVER decides retry-vs-DLQ
 	// and tells the worker what happened via `retrying`.
 	Fail(context.Context, *FailRequest) (*FailResponse, error)
+	// Heartbeat renews a job's lease while its worker is still working on it, so
+	// a slow job is not mistaken for a dead worker.
+	Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error)
 	mustEmbedUnimplementedJobQueueServer()
 }
 
@@ -124,6 +141,9 @@ func (UnimplementedJobQueueServer) Complete(context.Context, *CompleteRequest) (
 }
 func (UnimplementedJobQueueServer) Fail(context.Context, *FailRequest) (*FailResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Fail not implemented")
+}
+func (UnimplementedJobQueueServer) Heartbeat(context.Context, *HeartbeatRequest) (*HeartbeatResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Heartbeat not implemented")
 }
 func (UnimplementedJobQueueServer) mustEmbedUnimplementedJobQueueServer() {}
 func (UnimplementedJobQueueServer) testEmbeddedByValue()                  {}
@@ -218,6 +238,24 @@ func _JobQueue_Fail_Handler(srv interface{}, ctx context.Context, dec func(inter
 	return interceptor(ctx, in, info, handler)
 }
 
+func _JobQueue_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HeartbeatRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(JobQueueServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: JobQueue_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(JobQueueServer).Heartbeat(ctx, req.(*HeartbeatRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // JobQueue_ServiceDesc is the grpc.ServiceDesc for JobQueue service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -240,6 +278,10 @@ var JobQueue_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Fail",
 			Handler:    _JobQueue_Fail_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _JobQueue_Heartbeat_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
