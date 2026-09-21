@@ -86,9 +86,10 @@ func run() error {
 }
 
 // reapExpiredLeases is the whole of crash recovery: a worker that dies stops
-// renewing its lease, and the next sweep returns its job to the queue. Sweeping
-// once before the first tick also clears out jobs left in flight by a previous
-// run, so there is no separate boot-time recovery path.
+// renewing its lease, and the next sweep returns its job to the queue. There is
+// no separate boot-time recovery path — a restarted server sweeps before its
+// first tick, so it recovers whatever has already lapsed straight away and the
+// rest within one lease.
 func reapExpiredLeases(ctx context.Context, q *queue.Queue) {
 	ticker := time.NewTicker(reapInterval)
 	defer ticker.Stop()
