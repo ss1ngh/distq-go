@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"google.golang.org/grpc"
 
@@ -15,51 +17,114 @@ import (
 	"github.com/ss1ngh/distq-go/internal/storage"
 )
 
-func main() {
-	//connect to PostgreSQL running in Docker
+const (
+	// address is where workers and producers dial in.
+	address = ":4040"
+	// dsn points at the PostgreSQL instance jobs are persisted in.
+	dsn = "postgres://user:pass@localhost:5432/distq?sslmode=disable"
+	// leaseFor is how long a worker owns a job it claimed. A worker that dies
+	// mid-job holds it for at most this long before it is handed to somebody
+	// else, so failover latency is leaseFor + reapInterval.
+	leaseFor = 30 * time.Second
+	// reapInterval is how often expired leases are swept.
+	reapInterval = 5 * time.Second
+	// shutdownGrace bounds how long in-flight RPCs get to finish.
+	shutdownGrace = 10 * time.Second
+)
 
-	dsn := "postgres://user:pass@localhost:5432/distq?sslmode=disable"
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "[Server] %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	store, err := storage.NewPostgresStore(dsn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to connect to postgres: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to connect to postgres: %w", err)
 	}
 	defer store.Close()
 	fmt.Println("[Server] Successfully connected to PostgreSQL database!")
 
-	//initialize queue logic
-	q, err := queue.New(queue.Options{Store: store})
+	q, err := queue.New(queue.Options{Store: store, LeaseFor: leaseFor})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create queue: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to create queue: %w", err)
 	}
 
-	// 3. Open the OS network port
-	ln, err := net.Listen("tcp", ":4040")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go reapExpiredLeases(ctx, q)
+
+	ln, err := net.Listen("tcp", address)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to listen: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to listen on %s: %w", address, err)
 	}
 
-	// 4. Create the gRPC Engine
 	grpcServer := grpc.NewServer()
+	pb.RegisterJobQueueServer(grpcServer, server.New(q))
 
-	// 5. Register our custom Server struct with the gRPC Engine
-	srv := server.New(q)
-	pb.RegisterJobQueueServer(grpcServer, srv)
-
+	serveErr := make(chan error, 1)
 	go func() {
-		fmt.Println("gRPC Server listening on port 4040 with PostgreSQL backing...")
-		if err := grpcServer.Serve(ln); err != nil {
-			fmt.Fprintf(os.Stderr, "grpc server error: %v\n", err)
-		}
+		fmt.Printf("[Server] gRPC listening on %s with PostgreSQL backing...\n", address)
+		serveErr <- grpcServer.Serve(ln)
 	}()
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	select {
+	case err := <-serveErr:
+		// The listener died. Staying up would look healthy while refusing every
+		// connection, so report it instead.
+		return fmt.Errorf("grpc server stopped: %w", err)
+	case <-ctx.Done():
+	}
 
-	fmt.Println("\nShutdown signal received...")
-	grpcServer.GracefulStop()
-	fmt.Println("System shutdown complete.")
+	fmt.Println("\n[Server] Shutdown signal received...")
+	gracefulStop(grpcServer)
+	fmt.Println("[Server] System shutdown complete.")
+	return nil
+}
+
+// reapExpiredLeases is the whole of crash recovery: a worker that dies stops
+// renewing its lease, and the next sweep returns its job to the queue. Sweeping
+// once before the first tick also clears out jobs left in flight by a previous
+// run, so there is no separate boot-time recovery path.
+func reapExpiredLeases(ctx context.Context, q *queue.Queue) {
+	ticker := time.NewTicker(reapInterval)
+	defer ticker.Stop()
+
+	for {
+		released, err := q.ReapExpiredLeases(ctx)
+		switch {
+		case err != nil && ctx.Err() != nil:
+			return // shutting down mid-sweep
+		case err != nil:
+			fmt.Fprintf(os.Stderr, "[Reaper] sweep failed: %v\n", err)
+		case released > 0:
+			fmt.Printf("[Reaper] reassigned %d job(s) whose lease expired\n", released)
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// gracefulStop drains in-flight RPCs, but not indefinitely: the stop is forced
+// after shutdownGrace so a stuck worker cannot keep the process alive forever.
+func gracefulStop(grpcServer *grpc.Server) {
+	stopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(shutdownGrace):
+		fmt.Fprintln(os.Stderr, "[Server] Graceful shutdown timed out, forcing stop")
+		grpcServer.Stop()
+	}
 }

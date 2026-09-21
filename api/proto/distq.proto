@@ -41,6 +41,8 @@ message EnqueueResponse {
 
 // Dequeue RPC structures
 message DequeueRequest {
+  // Identifies the worker asking for work. Required: the job is leased to this
+  // id for a fixed period, and only this worker may then Complete or Fail it.
   string worker_id = 1;
 }
 
@@ -52,6 +54,10 @@ message DequeueResponse {
 // Complete RPC structures
 message CompleteRequest {
   string job_id = 1;
+  // The worker the job is leased to. Completion from anyone else is refused, so
+  // a worker that stalled past its lease cannot overwrite the result of the
+  // worker the job was handed to after it was reassigned.
+  string worker_id = 2;
 }
 
 message CompleteResponse {
@@ -62,6 +68,8 @@ message CompleteResponse {
 message FailRequest {
   string job_id = 1;
   string error_message = 2;
+  // The worker the job is leased to; see CompleteRequest.worker_id.
+  string worker_id = 3;
 }
 
 message FailResponse {

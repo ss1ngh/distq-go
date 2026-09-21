@@ -93,7 +93,7 @@ func main() {
 		err = flakyHandler(ctx, job, attempt)
 
 		if err == nil {
-			ackResp, ackErr := client.Complete(ctx, &pb.CompleteRequest{JobId: job.Id})
+			ackResp, ackErr := client.Complete(ctx, &pb.CompleteRequest{JobId: job.Id, WorkerId: workerID})
 			if ackErr != nil || ackResp.Error != "" {
 				fmt.Printf("[Worker] Failed to COMPLETE Job [%s]: %v %v\n", shortID(job.Id), ackErr, ackResp.GetError())
 			} else {
@@ -107,6 +107,7 @@ func main() {
 		failResp, failErr := client.Fail(ctx, &pb.FailRequest{
 			JobId:        job.Id,
 			ErrorMessage: err.Error(),
+			WorkerId:     workerID,
 		})
 		if failErr != nil || failResp.Error != "" {
 			fmt.Printf("[Worker] Failed to report failure for [%s]: %v %v\n", shortID(job.Id), failErr, failResp.GetError())

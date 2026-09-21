@@ -214,8 +214,10 @@ func (x *EnqueueResponse) GetError() string {
 
 // Dequeue RPC structures
 type DequeueRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	WorkerId      string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Identifies the worker asking for work. Required: the job is leased to this
+	// id for a fixed period, and only this worker may then Complete or Fail it.
+	WorkerId      string `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -311,8 +313,12 @@ func (x *DequeueResponse) GetError() string {
 
 // Complete RPC structures
 type CompleteRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	JobId string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	// The worker the job is leased to. Completion from anyone else is refused, so
+	// a worker that stalled past its lease cannot overwrite the result of the
+	// worker the job was handed to after it was reassigned.
+	WorkerId      string `protobuf:"bytes,2,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -350,6 +356,13 @@ func (*CompleteRequest) Descriptor() ([]byte, []int) {
 func (x *CompleteRequest) GetJobId() string {
 	if x != nil {
 		return x.JobId
+	}
+	return ""
+}
+
+func (x *CompleteRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
 	}
 	return ""
 }
@@ -400,9 +413,11 @@ func (x *CompleteResponse) GetError() string {
 
 // Fail RPC structures
 type FailRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	ErrorMessage  string                 `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	JobId        string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	ErrorMessage string                 `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
+	// The worker the job is leased to; see CompleteRequest.worker_id.
+	WorkerId      string `protobuf:"bytes,3,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -447,6 +462,13 @@ func (x *FailRequest) GetJobId() string {
 func (x *FailRequest) GetErrorMessage() string {
 	if x != nil {
 		return x.ErrorMessage
+	}
+	return ""
+}
+
+func (x *FailRequest) GetWorkerId() string {
+	if x != nil {
+		return x.WorkerId
 	}
 	return ""
 }
@@ -530,14 +552,16 @@ const file_distq_proto_rawDesc = "" +
 	"\x0fDequeueResponse\x12\x1c\n" +
 	"\x03job\x18\x01 \x01(\v2\n" +
 	".distq.JobR\x03job\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"(\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"E\n" +
 	"\x0fCompleteRequest\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"(\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x1b\n" +
+	"\tworker_id\x18\x02 \x01(\tR\bworkerId\"(\n" +
 	"\x10CompleteResponse\x12\x14\n" +
-	"\x05error\x18\x01 \x01(\tR\x05error\"I\n" +
+	"\x05error\x18\x01 \x01(\tR\x05error\"f\n" +
 	"\vFailRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12#\n" +
-	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\"@\n" +
+	"\rerror_message\x18\x02 \x01(\tR\ferrorMessage\x12\x1b\n" +
+	"\tworker_id\x18\x03 \x01(\tR\bworkerId\"@\n" +
 	"\fFailResponse\x12\x1a\n" +
 	"\bretrying\x18\x01 \x01(\bR\bretrying\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error2\xec\x01\n" +
