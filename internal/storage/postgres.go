@@ -220,8 +220,7 @@ func (s *PostgresStore) HeartbeatJob(ctx context.Context, id, workerID string, l
 // NextVisible reports how long until the oldest pending job becomes claimable,
 // and whether the queue holds anything pending at all. The wait is measured by
 // the database, so a clock difference between the app and the database cannot
-// turn a sleep into a spin — and the app cannot outfox it by knowing that a row
-// is due but not claimable.
+// turn a caller's sleep into a spin.
 func (s *PostgresStore) NextVisible(ctx context.Context) (time.Duration, bool, error) {
 	const query = `
 		SELECT coalesce(extract(epoch FROM (min(next_run_at) - CURRENT_TIMESTAMP)), 0)::float8,

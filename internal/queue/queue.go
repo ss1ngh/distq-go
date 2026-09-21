@@ -9,13 +9,15 @@ import (
 	"github.com/ss1ngh/distq-go/internal/storage"
 )
 
-// DefaultRetryBaseDelay is the backoff base: delay for attempt n is
-// base * 2^n (1s, 2s, 4s, ... capped by the store).
+// DefaultRetryBaseDelay is the backoff base: the wait before attempt n is
+// base * 2^(n-1), so 1s, 2s, 4s, ... There is no separate ceiling on it — the wait
+// cannot run away because max_retries bounds how many attempts there are.
 const DefaultRetryBaseDelay = 1 * time.Second
 
 // DefaultLeaseFor is how long a claimed job stays owned by its worker before the
 // reaper assumes the worker died. It has to comfortably outlast a normal job
-// while staying short enough that a crash does not stall the job for long.
+// while staying short enough that a crash does not stall the job for long: a job
+// becomes failover-eligible after one lease plus one reaper interval.
 const DefaultLeaseFor = 30 * time.Second
 
 type Options struct {
