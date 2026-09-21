@@ -1,56 +1,65 @@
 package main
 
 import (
-	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"google.golang.org/grpc"
+
+	"github.com/ss1ngh/distq-go/internal/pb"
 	"github.com/ss1ngh/distq-go/internal/queue"
 	"github.com/ss1ngh/distq-go/internal/server"
 	"github.com/ss1ngh/distq-go/internal/storage"
 )
 
 func main() {
-	//initialize the storage layer
-	store, err := storage.NewSQLiteStore("distq.db")
+	//connect to PostgreSQL running in Docker
+
+	dsn := "postgres://user:pass@localhost:5432/distq?sslmode=disable"
+	store, err := storage.NewPostgresStore(dsn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to open db: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to connect to postgres: %v\n", err)
 		os.Exit(1)
 	}
 	defer store.Close()
+	fmt.Println("[Server] Successfully connected to PostgreSQL database!")
 
-	//initialize the queue bridge
+	//initialize queue logic
 	q, err := queue.New(queue.Options{Store: store})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create queue: %v\n", err)
 		os.Exit(1)
 	}
 
-	//set up global context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	// 3. Open the OS network port
+	ln, err := net.Listen("tcp", ":4040")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to listen: %v\n", err)
+		os.Exit(1)
+	}
 
-	//initialize and start TCP server
-	srv := server.New(":4040", q)
+	// 4. Create the gRPC Engine
+	grpcServer := grpc.NewServer()
+
+	// 5. Register our custom Server struct with the gRPC Engine
+	srv := server.New(q)
+	pb.RegisterJobQueueServer(grpcServer, srv)
 
 	go func() {
-		if err := srv.Start(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		fmt.Println("gRPC Server listening on port 4040 with PostgreSQL backing...")
+		if err := grpcServer.Serve(ln); err != nil {
+			fmt.Fprintf(os.Stderr, "grpc server error: %v\n", err)
 		}
 	}()
 
-	//block the main thread until an OS interrupt (Ctrl+C)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 
 	fmt.Println("\nShutdown signal received...")
-
-	//cancel context (stops listener) and wait for active jobs to finish
-	cancel()
-	srv.Stop()
-
+	grpcServer.GracefulStop()
 	fmt.Println("System shutdown complete.")
 }

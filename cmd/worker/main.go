@@ -8,22 +8,26 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ss1ngh/distq-go/internal/client"
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
+	"github.com/ss1ngh/distq-go/internal/pb"
 )
 
 func main() {
-	fmt.Println("[Worker] Booting Distributed Node...")
+	workerID := uuid.New().String()
+	fmt.Printf("[Worker %s] Booting Distributed Node...\n", workerID[:8])
 
-	// 1. Dial the Queue Server using the RPC Stub
-	c, err := client.New("localhost:4040")
+	conn, err := grpc.NewClient("localhost:4040", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Worker] Fatal: Failed to connect to queue server: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[Worker] Fatal: Failed to connect: %v\n", err)
 		os.Exit(1)
 	}
-	defer c.Close()
-	fmt.Println("[Worker] Successfully connected to Queue Server at localhost:4040")
+	defer conn.Close()
 
-	// 2. Setup context for graceful shutdown
+	client := pb.NewJobQueueClient(conn)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -37,40 +41,40 @@ func main() {
 
 	fmt.Println("[Worker] Listening for jobs...")
 
-	// 3. The Polling Engine
 	for {
-		// Check if OS requested a shutdown
 		if ctx.Err() != nil {
 			break
 		}
 
-		// 4. Request a job over TCP
-		j, err := c.Dequeue(ctx)
+		req := &pb.DequeueRequest{WorkerId: workerID}
+		resp, err := client.Dequeue(ctx, req)
+
 		if err != nil {
 			fmt.Printf("[Worker] Network error: %v\n", err)
-			time.Sleep(2 * time.Second) // Network backoff
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if resp.Error != "" {
+			fmt.Printf("[Worker] Server error: %s\n", resp.Error)
+			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// If the queue is empty, the server returns nil. Sleep to prevent CPU spinning.
-		if j == nil {
+		job := resp.GetJob()
+		if job == nil {
 			time.Sleep(1 * time.Second)
 			continue
 		}
 
-		// 5. Execute Business Logic
-		fmt.Printf("[Worker] Processing Job ID [%s] - Type: %s\n", j.ID, j.Type)
+		fmt.Printf("[Worker] Processing Job [%s] - Type: %s\n", job.Id, job.Type)
+		time.Sleep(2 * time.Second) // Simulate work
 
-		// Simulate heavy computational work or I/O
-		time.Sleep(2 * time.Second)
-
-		// 6. Network Acknowledgement
-		if err := c.Ack(ctx, j.ID); err != nil {
-			fmt.Printf("[Worker] Failed to ACK Job [%s]: %v\n", j.ID, err)
+		ackResp, err := client.Ack(ctx, &pb.AckRequest{JobId: job.Id})
+		if err != nil || ackResp.Error != "" {
+			fmt.Printf("[Worker] Failed to ACK Job [%s]\n", job.Id)
 		} else {
-			fmt.Printf("[Worker] Successfully completed Job [%s]\n", j.ID)
+			fmt.Printf("[Worker] Successfully completed Job [%s]\n", job.Id)
 		}
 	}
-
 	fmt.Println("[Worker] Engine shutdown complete.")
 }

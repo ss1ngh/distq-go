@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package distq;
+
+//Tells the Go protoc plugin where to output the generated code package
+option go_package = "github.com/ss1ngh/distq-go/internal/pb";
+
+//JobQueue service exposes our core remote procedure calls over HTTP/2
+service JobQueue {
+  rpc Enqueue (EnqueueRequest) returns (EnqueueResponse);
+  rpc Dequeue (DequeueRequest) returns (DequeueResponse);
+  rpc Ack (AckRequest) returns (AckResponse);
+  rpc Fail (FailRequest) returns (FailResponse);
+}
+
+// Core Job structure representing a background task
+message Job {
+  string id = 1;
+  string type = 2;
+  bytes payload = 3;
+  string status = 4;
+  string error = 5;
+}
+
+// Enqueue RPC structures
+message EnqueueRequest {
+  Job job = 1;
+}
+
+message EnqueueResponse {
+  string job_id = 1;
+  string error = 2;
+}
+
+// Dequeue RPC structures
+message DequeueRequest {
+  string worker_id = 1;
+}
+
+message DequeueResponse {
+  Job job = 1;
+  string error = 2;
+}
+
+// Ack RPC structures
+message AckRequest {
+  string job_id = 1;
+}
+
+message AckResponse {
+  string error = 1;
+}
+
+// Fail RPC structures
+message FailRequest {
+  string job_id = 1;
+  string error_message = 2;
+}
+
+message FailResponse {
+  string error = 1;
+}
