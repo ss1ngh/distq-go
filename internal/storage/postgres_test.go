@@ -72,7 +72,7 @@ func TestDequeueClaimsEachJobOnce(t *testing.T) {
 		go func(workerID string) {
 			defer wg.Done()
 			for {
-				job, err := store.DequeueJob(ctx, workerID, time.Minute)
+				job, err := store.DequeueJob(ctx, 1, workerID, time.Minute)
 				if err != nil {
 					t.Errorf("%s: dequeue: %v", workerID, err)
 					return
@@ -108,7 +108,7 @@ func TestFinishingIsFencedToTheLeaseHolder(t *testing.T) {
 	if err := store.CreateJob(ctx, testJob("fenced")); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	job, err := store.DequeueJob(ctx, "owner", time.Minute)
+	job, err := store.DequeueJob(ctx, 1, "owner", time.Minute)
 	if err != nil || job == nil {
 		t.Fatalf("dequeue: job=%v err=%v", job, err)
 	}
@@ -129,7 +129,7 @@ func TestFinishingIsFencedToTheLeaseHolder(t *testing.T) {
 	if err := store.Complete(ctx, job.Id, "owner"); err != nil {
 		t.Errorf("complete by the lease holder: %v", err)
 	}
-	if again, err := store.DequeueJob(ctx, "owner", time.Minute); err != nil {
+	if again, err := store.DequeueJob(ctx, 1, "owner", time.Minute); err != nil {
 		t.Fatalf("dequeue: %v", err)
 	} else if again != nil {
 		t.Errorf("job %s was still claimable after completion", again.Id)
@@ -146,12 +146,12 @@ func TestReapExpiredLeasesReturnsAJobExactlyOnce(t *testing.T) {
 		t.Fatalf("create job: %v", err)
 	}
 	// A lease that has already lapsed: the worker that held it is gone.
-	job, err := store.DequeueJob(ctx, "ghost", -time.Second)
+	job, err := store.DequeueJob(ctx, 1, "ghost", -time.Second)
 	if err != nil || job == nil {
 		t.Fatalf("dequeue: job=%v err=%v", job, err)
 	}
 
-	released, err := store.ReapExpiredLeases(ctx)
+	released, err := store.ReapExpiredLeases(ctx, 1)
 	if err != nil {
 		t.Fatalf("reap: %v", err)
 	}
@@ -159,8 +159,9 @@ func TestReapExpiredLeasesReturnsAJobExactlyOnce(t *testing.T) {
 		t.Errorf("first sweep released %d jobs, want 1", released)
 	}
 
-	// Sweeping is not repeatable: the job is pending now, not processing.
-	if released, err = store.ReapExpiredLeases(ctx); err != nil {
+	// Sweeping with the same term again releases nothing: the job is pending
+	// now, not processing.
+	if released, err = store.ReapExpiredLeases(ctx, 1); err != nil {
 		t.Fatalf("reap: %v", err)
 	} else if released != 0 {
 		t.Errorf("second sweep released %d jobs, want 0", released)
@@ -168,7 +169,7 @@ func TestReapExpiredLeasesReturnsAJobExactlyOnce(t *testing.T) {
 
 	expectLeaseLost(t, "complete", store.Complete(ctx, job.Id, "ghost"))
 
-	again, err := store.DequeueJob(ctx, "live", time.Minute)
+	again, err := store.DequeueJob(ctx, 1, "live", time.Minute)
 	if err != nil {
 		t.Fatalf("dequeue: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestHeartbeatExtendsTheLease(t *testing.T) {
 	if err := store.CreateJob(ctx, testJob("slow")); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	job, err := store.DequeueJob(ctx, "owner", -time.Second)
+	job, err := store.DequeueJob(ctx, 1, "owner", -time.Second)
 	if err != nil || job == nil {
 		t.Fatalf("dequeue: job=%v err=%v", job, err)
 	}
@@ -208,7 +209,7 @@ func TestHeartbeatExtendsTheLease(t *testing.T) {
 		t.Fatal("heartbeat from the lease holder was refused")
 	}
 
-	if released, err := store.ReapExpiredLeases(ctx); err != nil {
+	if released, err := store.ReapExpiredLeases(ctx, 1); err != nil {
 		t.Fatalf("reap: %v", err)
 	} else if released != 0 {
 		t.Errorf("sweep released %d jobs that were being kept alive, want 0", released)
@@ -230,7 +231,7 @@ func TestFailRetriesUntilAttemptsAreExhausted(t *testing.T) {
 	// max_retries counts retries after the first attempt: two retries, and the
 	// third failure is the one that gives up.
 	for attempt := 1; attempt <= 2; attempt++ {
-		claimed, err := store.DequeueJob(ctx, "worker", time.Minute)
+		claimed, err := store.DequeueJob(ctx, 1, "worker", time.Minute)
 		if err != nil {
 			t.Fatalf("attempt %d: dequeue: %v", attempt, err)
 		}
@@ -247,7 +248,7 @@ func TestFailRetriesUntilAttemptsAreExhausted(t *testing.T) {
 		}
 	}
 
-	claimed, err := store.DequeueJob(ctx, "worker", time.Minute)
+	claimed, err := store.DequeueJob(ctx, 1, "worker", time.Minute)
 	if err != nil || claimed == nil {
 		t.Fatalf("final attempt: job=%v err=%v", claimed, err)
 	}
@@ -260,7 +261,7 @@ func TestFailRetriesUntilAttemptsAreExhausted(t *testing.T) {
 		t.Error("final attempt: retrying = true, want false so the job lands in the DLQ")
 	}
 
-	if left, err := store.DequeueJob(ctx, "worker", time.Minute); err != nil {
+	if left, err := store.DequeueJob(ctx, 1, "worker", time.Minute); err != nil {
 		t.Fatalf("dequeue: %v", err)
 	} else if left != nil {
 		t.Errorf("dead-lettered job %s was claimable again", left.Id)
@@ -276,7 +277,7 @@ func TestFailDelaysTheNextAttempt(t *testing.T) {
 	if err := store.CreateJob(ctx, testJob("backoff")); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	job, err := store.DequeueJob(ctx, "worker", time.Minute)
+	job, err := store.DequeueJob(ctx, 1, "worker", time.Minute)
 	if err != nil || job == nil {
 		t.Fatalf("dequeue: job=%v err=%v", job, err)
 	}
@@ -287,7 +288,7 @@ func TestFailDelaysTheNextAttempt(t *testing.T) {
 		t.Fatal("retrying = false, want the job to be queued for another attempt")
 	}
 
-	if waiting, err := store.DequeueJob(ctx, "worker", time.Minute); err != nil {
+	if waiting, err := store.DequeueJob(ctx, 1, "worker", time.Minute); err != nil {
 		t.Fatalf("dequeue: %v", err)
 	} else if waiting != nil {
 		t.Errorf("job %s was claimable inside its backoff window", waiting.Id)
@@ -299,6 +300,86 @@ func TestFailDelaysTheNextAttempt(t *testing.T) {
 	}
 	if state != "pending" {
 		t.Errorf("state during backoff = %q, want %q", state, "pending")
+	}
+}
+
+// TestDeposedLeaderCannotClaimOrSweep is the split-brain fence at the claim
+// layer: a leadership whose term is behind a job's claim_term must not be able
+// to dispatch it or to sweep it back into the queue.
+func TestDeposedLeaderCannotClaimOrSweep(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	// The new leader dispatches the job; its term is stamped onto the row.
+	if err := store.CreateJob(ctx, testJob("fenced-term")); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if job, err := store.DequeueJob(ctx, 7, "worker", time.Minute); err != nil || job == nil {
+		t.Fatalf("new leader claim: job=%v err=%v", job, err)
+	}
+
+	// A deposed leader — its term 6 is behind the row's 7 — campaigns after a
+	// crash (there is no leadership state to check here; the store is the
+	// last line of defence) and tries to dispatch the same job.
+	if job, err := store.DequeueJob(ctx, 6, "zombie", time.Minute); err != nil {
+		t.Fatalf("deposed claim: %v", err)
+	} else if job != nil {
+		t.Errorf("a deposed leader's claim landed on job %s", job.Id)
+	}
+
+	// Its sweep is fenced the same way: a stalled worker's job is left for the
+	// current leadership to handle, not recovered by an old one.
+	if _, err := store.db.Exec(`UPDATE jobs SET lease_expires_at = 'epoch'`); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if released, err := store.ReapExpiredLeases(ctx, 6); err != nil {
+		t.Fatalf("deposed sweep: %v", err)
+	} else if released != 0 {
+		t.Errorf("a deposed leader's sweep released %d job(s), want 0", released)
+	}
+
+	// The current leadership's sweep of the very same expired lease works.
+	if released, err := store.ReapExpiredLeases(ctx, 7); err != nil {
+		t.Fatalf("current sweep: %v", err)
+	} else if released != 1 {
+		t.Errorf("current leadership sweep released %d job(s), want 1", released)
+	}
+}
+
+// TestClaimTermOnlyMovesUp pins the fence's direction: a claim by a newer
+// leadership moves a job's claim_term up, and no path moves it down.
+func TestClaimTermOnlyMovesUp(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	if err := store.CreateJob(ctx, testJob("term-up")); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	if _, err := store.DequeueJob(ctx, 5, "worker", time.Minute); err != nil {
+		t.Fatalf("claim at term 5: %v", err)
+	}
+	var term int64
+	if err := store.db.QueryRow(`SELECT claim_term FROM jobs WHERE id = $1`, "term-up").Scan(&term); err != nil {
+		t.Fatalf("read claim_term: %v", err)
+	}
+	if term != 5 {
+		t.Errorf("claim_term after a term-5 claim = %d, want 5", term)
+	}
+
+	// The job comes back through the retry path and is claimed again by an
+	// older term: the stamp must not go backwards.
+	if _, err := store.db.Exec(`UPDATE jobs SET state='pending', next_run_at='epoch', claim_term=99`); err != nil {
+		t.Fatalf("simulate term-99 claim: %v", err)
+	}
+	if _, err := store.DequeueJob(ctx, 6, "worker", time.Minute); err != nil {
+		t.Fatalf("claim at term 6 over term 99: %v", err)
+	}
+	if err := store.db.QueryRow(`SELECT claim_term FROM jobs WHERE id = $1`, "term-up").Scan(&term); err != nil {
+		t.Fatalf("read claim_term: %v", err)
+	}
+	if term != 99 {
+		t.Errorf("claim_term after a term-6 claim over a term-99 row = %d, want 99 (only up)", term)
 	}
 }
 

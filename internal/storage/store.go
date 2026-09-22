@@ -17,10 +17,10 @@ type Store interface {
 	CreateJob(ctx context.Context, j *pb.Job) error
 
 	// DequeueJob atomically claims the next visible job and leases it to
-	// workerID for the given duration. It returns (nil, nil) when no job is
-	// visible — an empty queue, or every remaining job is still waiting out its
-	// backoff window.
-	DequeueJob(ctx context.Context, workerID string, lease time.Duration) (*pb.Job, error)
+	// workerID for the given duration, on behalf of the leadership term that is
+	// dispatching. It returns (nil, nil) when no job is visible — an empty
+	// queue, or every remaining job is still waiting out its backoff window.
+	DequeueJob(ctx context.Context, term int64, workerID string, lease time.Duration) (*pb.Job, error)
 
 	// Complete marks a job as successfully finished, but only for the worker
 	// holding its lease. It returns ErrLeaseLost otherwise.
@@ -43,8 +43,11 @@ type Store interface {
 
 	// ReapExpiredLeases returns jobs whose worker stopped renewing its lease to
 	// the queue, and reports how many it released. This is the only thing that
-	// has to run for a crashed worker's job to be picked up again.
-	ReapExpiredLeases(ctx context.Context) (released int64, err error)
+	// has to run for a crashed worker's job to be picked up again. Like a
+	// claim, the sweep is stamped with the caller's leadership term, so a
+	// deposed leader's late sweep cannot recover a job the new leader has
+	// already decided about.
+	ReapExpiredLeases(ctx context.Context, term int64) (released int64, err error)
 
 	// Campaign tries to win leadership of the cluster: exactly one node may
 	// dispatch jobs and reap leases at a time. It succeeds only while the

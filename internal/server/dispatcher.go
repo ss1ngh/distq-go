@@ -29,11 +29,10 @@ type dispatcher struct {
 	ctx context.Context
 	q   *queue.Queue
 
-	// mayDispatch is the leadership gate: only the cluster's leader hands out
-	// work. It is a function rather than a bool because the answer changes over
-	// a server's lifetime — every server runs one of these, and the losers must
-	// not dispatch.
-	mayDispatch func() bool
+	// lead is the leadership gate: only the cluster's leader hands out work,
+	// and every claim it makes is stamped with the current term so a deposed
+	// leader's late claim cannot overwrite a newer one.
+	lead *Leadership
 
 	mu      sync.Mutex
 	waiters []*waiter
@@ -46,8 +45,8 @@ type waiter struct {
 	deliveries chan *pb.Assigned
 }
 
-func newDispatcher(ctx context.Context, q *queue.Queue, mayDispatch func() bool) *dispatcher {
-	return &dispatcher{ctx: ctx, q: q, mayDispatch: mayDispatch}
+func newDispatcher(ctx context.Context, q *queue.Queue, lead *Leadership) *dispatcher {
+	return &dispatcher{ctx: ctx, q: q, lead: lead}
 }
 
 // register notes that a worker is free and looks for work for it.
@@ -98,18 +97,22 @@ func (d *dispatcher) Push() {
 // pushLocked dequeues a job for each worker that is waiting, stopping as soon as
 // the queue has nothing visible left to hand out. Callers must hold d.mu.
 func (d *dispatcher) pushLocked() {
-	if !d.mayDispatch() {
+	if !d.lead.Leading() {
 		// A follower holds nobody in line — its streams were never admitted —
 		// but a just-deposed leader may still be draining waiters. It stops
-		// handing out work here, and the leadership loop's wake on the next
-		// win picks the flow back up.
+		// handing out work here, and the next registration re-arms the flow.
 		return
 	}
+
+	// One term for the whole pass: claims made in a single push belong to a
+	// single reign. A renewal cannot move the term mid-pass (it only renews),
+	// and a demotion cannot either — the next pass reads the new state.
+	term := d.lead.Term()
 
 	for len(d.waiters) > 0 {
 		w := d.waiters[0]
 
-		job, err := d.q.Dequeue(d.ctx, w.workerID)
+		job, err := d.q.Dequeue(d.ctx, term, w.workerID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[Dispatcher] claim for worker %s: %v\n", w.workerID, err)
 			return

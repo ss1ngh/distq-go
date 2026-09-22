@@ -62,9 +62,10 @@ func (q *Queue) Enqueue(ctx context.Context, j *pb.Job) error {
 	return nil
 }
 
-// Dequeue leases the next visible job to workerID.
-func (q *Queue) Dequeue(ctx context.Context, workerID string) (*pb.Job, error) {
-	return q.store.DequeueJob(ctx, workerID, q.leaseFor)
+// Dequeue leases the next visible job to workerID on behalf of the leadership
+// term that is dispatching.
+func (q *Queue) Dequeue(ctx context.Context, term int64, workerID string) (*pb.Job, error) {
+	return q.store.DequeueJob(ctx, term, workerID, q.leaseFor)
 }
 
 // Complete marks a job done on behalf of the worker holding its lease.
@@ -94,9 +95,10 @@ func (q *Queue) NextVisible(ctx context.Context) (time.Duration, bool, error) {
 	return q.store.NextVisible(ctx)
 }
 
-// ReapExpiredLeases hands jobs whose worker went quiet back to the queue.
-func (q *Queue) ReapExpiredLeases(ctx context.Context) (int64, error) {
-	return q.store.ReapExpiredLeases(ctx)
+// ReapExpiredLeases hands jobs whose worker went quiet back to the queue, for
+// the leadership term that is reaping.
+func (q *Queue) ReapExpiredLeases(ctx context.Context, term int64) (int64, error) {
+	return q.store.ReapExpiredLeases(ctx, term)
 }
 
 // Campaign, RenewLeadership and ResignLeadership are the election primitives

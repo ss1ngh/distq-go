@@ -58,6 +58,9 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 	ALTER TABLE jobs ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMP;
 	ALTER TABLE jobs ADD COLUMN IF NOT EXISTS worker_id TEXT NOT NULL DEFAULT '';
 	ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP;
+	-- claim_term is the fencing token of the leadership that last dispatched the
+	-- job: 0 means nobody, and it only ever moves up.
+	ALTER TABLE jobs ADD COLUMN IF NOT EXISTS claim_term BIGINT NOT NULL DEFAULT 0;
 	CREATE INDEX IF NOT EXISTS idx_jobs_state_next_run ON jobs(state, next_run_at);
 	CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(state, lease_expires_at);
 	UPDATE jobs SET next_run_at = created_at WHERE next_run_at IS NULL;
@@ -118,12 +121,16 @@ func (s *PostgresStore) CreateJob(ctx context.Context, j *pb.Job) error {
 // backoff window is pending but not yet visible.
 // worker_id + lease_expires_at are the lease: the claim is proof of ownership
 // for this worker, and nothing else, until the lease runs out.
-func (s *PostgresStore) DequeueJob(ctx context.Context, workerID string, lease time.Duration) (*pb.Job, error) {
+// claim_term is the fencing token of the leadership that dispatched it: the
+// stored term can only ever go up, so a claim by a deposed leader — whose term
+// is behind the row's — cannot land after a newer one.
+func (s *PostgresStore) DequeueJob(ctx context.Context, term int64, workerID string, lease time.Duration) (*pb.Job, error) {
 	query := `
 		UPDATE jobs
 		SET state = 'processing',
 			started_at = CURRENT_TIMESTAMP,
 			worker_id = $1,
+			claim_term = greatest(claim_term, $3),
 			lease_expires_at = CURRENT_TIMESTAMP + make_interval(secs => $2)
 		WHERE id = (
 			SELECT id FROM jobs
@@ -135,7 +142,7 @@ func (s *PostgresStore) DequeueJob(ctx context.Context, workerID string, lease t
 
 	j := &pb.Job{}
 
-	err := s.db.QueryRowContext(ctx, query, workerID, lease.Seconds()).Scan(
+	err := s.db.QueryRowContext(ctx, query, workerID, lease.Seconds(), term).Scan(
 		&j.Id,
 		&j.Type,
 		&j.Payload,
@@ -262,7 +269,12 @@ func (s *PostgresStore) NextVisible(ctx context.Context) (time.Duration, bool, e
 //
 // No backoff delay here, unlike FailJob: the worker holding the job is gone, so
 // there is nothing to wait for.
-func (s *PostgresStore) ReapExpiredLeases(ctx context.Context) (int64, error) {
+//
+// The sweep is fenced on claim_term <= caller's term: a reign may recover its
+// own claims and older ones, but a deposed leader's late sweep — its term
+// behind the row's — must not recover a job the new leader has already
+// re-dispatched. Its view of the world is older than the row's.
+func (s *PostgresStore) ReapExpiredLeases(ctx context.Context, term int64) (int64, error) {
 	query := `
 		UPDATE jobs
 		SET state = ` + retryDecision + `,
@@ -272,9 +284,10 @@ func (s *PostgresStore) ReapExpiredLeases(ctx context.Context) (int64, error) {
 			lease_expires_at = NULL,
 			done_at = ` + doneAtDecision + `,
 			next_run_at = CURRENT_TIMESTAMP
-		WHERE state = 'processing' AND lease_expires_at < CURRENT_TIMESTAMP`
+		WHERE state = 'processing' AND lease_expires_at < CURRENT_TIMESTAMP
+			AND claim_term <= $1`
 
-	res, err := s.db.ExecContext(ctx, query)
+	res, err := s.db.ExecContext(ctx, query, term)
 	if err != nil {
 		return 0, fmt.Errorf("reap expired leases: %w", err)
 	}

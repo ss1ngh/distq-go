@@ -39,6 +39,7 @@ type Leadership struct {
 
 	mu      sync.Mutex
 	isLead  bool
+	term    int64           // fencing token of the reign leadCtx belongs to
 	leadCtx context.Context // live only while leading; cancelled on demotion
 	cancel  context.CancelFunc
 
@@ -78,8 +79,8 @@ func (l *Leadership) Run(ctx context.Context) {
 			return // shutting down before ever winning
 		}
 		fmt.Printf("[Leadership] node %s won term %d — dispatching and reaping here\n", l.leaderID, term)
-		l.becomeLead()
-		go reapExpiredLeases(l.LeadCtx(), l.q, l.reapEvery)
+		l.becomeLead(term)
+		go l.reapExpiredLeases(l.LeadCtx())
 
 		if l.holdUntilDeposedOrShutdown(ctx) {
 			return // shutting down; resign runs via defer
@@ -151,16 +152,18 @@ func (l *Leadership) holdUntilDeposedOrShutdown(ctx context.Context) bool {
 
 // becomeLead opens a new reign: a fresh leadership context that everything
 // belonging to this reign — the reaper, the worker streams — is bound to.
-func (l *Leadership) becomeLead() {
+func (l *Leadership) becomeLead(term int64) {
 	ctx, cancel := context.WithCancel(context.Background())
 	l.mu.Lock()
-	l.leadCtx, l.cancel = ctx, cancel
+	l.term, l.leadCtx, l.cancel = term, ctx, cancel
 	l.isLead = true
 	l.mu.Unlock()
 }
 
 // demote ends the current reign: the leadership context is cancelled, which
-// stops the reaper and drops every worker stream admitted under it.
+// stops the reaper and drops every worker stream admitted under it. The term
+// is deliberately kept — the fencing tokens already stamped into claims were
+// real, and Term() is not used to decide anything about the future.
 func (l *Leadership) demote() {
 	l.mu.Lock()
 	cancel := l.cancel
@@ -189,6 +192,15 @@ func (l *Leadership) LeadCtx() context.Context {
 	return l.leadCtx
 }
 
+// Term is the leadership term this node won, zero while it leads nobody. It is
+// the fencing token stamped into every claim and sweep, so a claim by a
+// deposed leader — whose term is behind the row's — refuses to land.
+func (l *Leadership) Term() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.term
+}
+
 // Stopped is closed once Run has returned and resignation has been attempted.
 func (l *Leadership) Stopped() <-chan struct{} { return l.stopped }
 
@@ -215,15 +227,15 @@ func (l *Leadership) resign() {
 // "startup" recovery: a rebooting leader simply runs this sweep, grabs
 // anything already expired, and catches the rest as leases time out.
 //
-// It runs only on the leader. Two reapers would not corrupt anything — the
-// sweep's WHERE clause is race-safe in the SQL — but leadership exists
-// precisely so that policy loops like this one do not run twice.
-func reapExpiredLeases(ctx context.Context, q *queue.Queue, every time.Duration) {
-	ticker := time.NewTicker(every)
+// It runs only on the leader, under its own reign's context — demotion stops
+// it mid-flight — and every sweep is stamped with the reign's term, fenced
+// against claims a newer leadership has already made.
+func (l *Leadership) reapExpiredLeases(ctx context.Context) {
+	ticker := time.NewTicker(l.reapEvery)
 	defer ticker.Stop()
 
 	for {
-		released, err := q.ReapExpiredLeases(ctx)
+		released, err := l.q.ReapExpiredLeases(ctx, l.Term())
 		switch {
 		case err != nil && ctx.Err() != nil:
 			return // shutting down mid-sweep

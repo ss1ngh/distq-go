@@ -29,14 +29,8 @@ type Server struct {
 // job that is not due yet. reapEvery is how often the leader — once elected —
 // sweeps expired job leases.
 func New(ctx context.Context, q *queue.Queue, reapEvery time.Duration) *Server {
-	var lead *Leadership
-	// The dispatcher asks the leadership whether it may hand out work; the
-	// indirection through the variable breaks what would otherwise be a
-	// construction cycle between the two. No wake-up call the other way is
-	// needed: waiters only exist on a leading node, and every registration
-	// re-arms the dispatcher's timer.
-	dis := newDispatcher(ctx, q, func() bool { return lead.Leading() })
-	lead = NewLeadership(q, uuid.New().String()[:8], q.LeaseFor(), reapEvery)
+	lead := NewLeadership(q, uuid.New().String()[:8], q.LeaseFor(), reapEvery)
+	dis := newDispatcher(ctx, q, lead)
 
 	return &Server{q: q, dis: dis, lead: lead, ctx: ctx}
 }
