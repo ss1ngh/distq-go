@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ss1ngh/distq-go/internal/config"
 	"github.com/ss1ngh/distq-go/internal/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -34,7 +35,8 @@ func main() {
 
 	fmt.Printf("[Producer] Booting up...\n")
 
-	conn, err := grpc.NewClient("localhost:4040", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	addr := config.ServerAddr()
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Producer] Fatal: Could not connect to server: %v\n", err)
 		os.Exit(1)
@@ -42,7 +44,7 @@ func main() {
 	defer conn.Close()
 
 	client := pb.NewJobQueueClient(conn)
-	fmt.Printf("[Producer] Connected to gRPC Server at localhost:4040\n")
+	fmt.Printf("[Producer] Connected to gRPC Server at %s\n", addr)
 
 	ctx := context.Background()
 	fmt.Printf("[Producer] Injecting %d '%s' jobs into the network...\n", count, jobType)

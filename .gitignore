@@ -8,6 +8,11 @@
 *.so
 *.dylib
 
+# Binaries built in the repository root (go build ./cmd/...)
+/distq
+/worker
+/producer
+
 # Test binary, built with `go test -c`
 *.test
 

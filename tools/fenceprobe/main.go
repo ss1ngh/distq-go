@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/ss1ngh/distq-go/internal/config"
 	"github.com/ss1ngh/distq-go/internal/pb"
 )
 
@@ -31,7 +32,7 @@ func main() {
 	}
 	jobID, workerID := os.Args[1], os.Args[2]
 
-	conn, err := grpc.NewClient("localhost:4040", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(config.ServerAddr(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dial: %v\n", err)
 		os.Exit(1)

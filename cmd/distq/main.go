@@ -11,6 +11,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"github.com/ss1ngh/distq-go/internal/config"
 	"github.com/ss1ngh/distq-go/internal/pb"
 	"github.com/ss1ngh/distq-go/internal/queue"
 	"github.com/ss1ngh/distq-go/internal/server"
@@ -18,10 +19,6 @@ import (
 )
 
 const (
-	// address is where workers and producers dial in.
-	address = ":4040"
-	// dsn points at the PostgreSQL instance jobs are persisted in.
-	dsn = "postgres://user:pass@localhost:5432/distq?sslmode=disable"
 	// leaseFor is how long a worker owns a job it claimed. A worker that dies
 	// mid-job holds it for at most this long before it is handed to somebody
 	// else, so failover latency is leaseFor + reapInterval.
@@ -40,6 +37,11 @@ func main() {
 }
 
 func run() error {
+	dsn, err := config.PostgresDSN()
+	if err != nil {
+		return err
+	}
+
 	store, err := storage.NewPostgresStore(dsn)
 	if err != nil {
 		return fmt.Errorf("failed to connect to postgres: %w", err)
@@ -57,9 +59,10 @@ func run() error {
 
 	go reapExpiredLeases(ctx, q)
 
-	ln, err := net.Listen("tcp", address)
+	addr := config.ListenAddr()
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("failed to listen on %s: %w", address, err)
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
 	grpcServer := grpc.NewServer()
@@ -67,7 +70,7 @@ func run() error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		fmt.Printf("[Server] gRPC listening on %s with PostgreSQL backing...\n", address)
+		fmt.Printf("[Server] gRPC listening on %s with PostgreSQL backing...\n", addr)
 		serveErr <- grpcServer.Serve(ln)
 	}()
 

@@ -14,12 +14,11 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/ss1ngh/distq-go/internal/config"
 	"github.com/ss1ngh/distq-go/internal/pb"
 )
 
 const (
-	// serverAddr is the queue server every worker dials.
-	serverAddr = "localhost:4040"
 	// reconnectDelay is how long a worker waits before opening a new stream after
 	// one breaks, so a server restart does not turn into a hot reconnect loop.
 	reconnectDelay = 2 * time.Second
@@ -45,7 +44,7 @@ type worker struct {
 }
 
 func main() {
-	w := &worker{id: uuid.New().String()[:8], client: dial()}
+	w := &worker{id: uuid.New().String()[:8], client: dial(config.ServerAddr())}
 	fmt.Printf("[Worker %s] Booting Distributed Node...\n", w.id)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -60,8 +59,8 @@ func main() {
 	fmt.Println("[Worker] Engine shutdown complete.")
 }
 
-func dial() pb.JobQueueClient {
-	conn, err := grpc.NewClient(serverAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func dial(addr string) pb.JobQueueClient {
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[Worker] Fatal: Failed to connect: %v\n", err)
 		os.Exit(1)
