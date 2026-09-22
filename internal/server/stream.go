@@ -29,6 +29,12 @@ func (s *Server) JobStream(stream pb.JobQueue_JobStreamServer) error {
 	if workerID == "" {
 		return status.Error(codes.InvalidArgument, "the first message on a job stream must be a Hello naming the worker")
 	}
+	if !s.lead.Leading() {
+		// Only the leader admits workers: a follower has no dispatcher, so a
+		// stream it took could never receive a job. Workers treat Unavailable
+		// as "wrong server" and reconnect, which lands them on whoever leads.
+		return status.Error(codes.Unavailable, "not the leader; reconnect to be routed to it")
+	}
 	fmt.Printf("[Server] worker %s connected\n", workerID)
 
 	// Receiving happens in its own goroutine, because this one is busy sending:
@@ -80,8 +86,10 @@ func (s *Server) JobStream(stream pb.JobQueue_JobStreamServer) error {
 			return err
 		case <-ctx.Done():
 			return nil
-		case <-s.ctx.Done():
-			return nil // the server is shutting down
+		case <-s.lead.LeadCtx().Done():
+			// This server's reign ended — it was deposed or is shutting down.
+			// The worker reconnects and is admitted by whoever leads now.
+			return nil
 		}
 	}
 }

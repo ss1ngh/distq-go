@@ -98,3 +98,19 @@ func (q *Queue) NextVisible(ctx context.Context) (time.Duration, bool, error) {
 func (q *Queue) ReapExpiredLeases(ctx context.Context) (int64, error) {
 	return q.store.ReapExpiredLeases(ctx)
 }
+
+// Campaign, RenewLeadership and ResignLeadership are the election primitives
+// the server's leadership loop runs on: win an expired lease, renew your own,
+// and give it back. Like everything here they are pass-throughs — the rules
+// live in the store's SQL.
+func (q *Queue) Campaign(ctx context.Context, leaderID string, lease time.Duration) (int64, bool, error) {
+	return q.store.Campaign(ctx, leaderID, lease)
+}
+
+func (q *Queue) RenewLeadership(ctx context.Context, leaderID string, lease time.Duration) (int64, bool, error) {
+	return q.store.RenewLeadership(ctx, leaderID, lease)
+}
+
+func (q *Queue) ResignLeadership(ctx context.Context, leaderID string) error {
+	return q.store.ResignLeadership(ctx, leaderID)
+}

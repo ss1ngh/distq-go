@@ -46,5 +46,22 @@ type Store interface {
 	// has to run for a crashed worker's job to be picked up again.
 	ReapExpiredLeases(ctx context.Context) (released int64, err error)
 
+	// Campaign tries to win leadership of the cluster: exactly one node may
+	// dispatch jobs and reap leases at a time. It succeeds only while the
+	// previous holder's lease has expired, and the returned term increases with
+	// every handover, so a stale leader's decisions can be told apart from a
+	// current one's.
+	Campaign(ctx context.Context, leaderID string, lease time.Duration) (term int64, won bool, err error)
+
+	// RenewLeadership extends the caller's own leadership lease and reports
+	// whether it still holds. False is the definitive answer a deposed leader
+	// needs before it dares dispatch again.
+	RenewLeadership(ctx context.Context, leaderID string, lease time.Duration) (term int64, leader bool, err error)
+
+	// ResignLeadership gives up leadership immediately instead of making the
+	// cluster wait out the lease. A clean shutdown hands over at once; a crash
+	// costs the cluster exactly one lease.
+	ResignLeadership(ctx context.Context, leaderID string) error
+
 	Close() error
 }

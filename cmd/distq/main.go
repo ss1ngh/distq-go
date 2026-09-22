@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	// leaseFor is how long a worker owns a job it claimed. A worker that dies
-	// mid-job holds it for at most this long before it is handed to somebody
-	// else, so failover latency is leaseFor + reapInterval.
+	// leaseFor is how long a worker owns a job it claimed — and, sharing one
+	// knob, how long a server owns the leadership. A worker that dies mid-job
+	// holds it for at most this long before it is handed to somebody else, so
+	// failover latency is leaseFor + reapInterval.
 	leaseFor = 30 * time.Second
-	// reapInterval is how often expired leases are swept.
+	// reapInterval is how often expired leases are swept, by the leader.
 	reapInterval = 5 * time.Second
 	// shutdownGrace bounds how long in-flight RPCs get to finish.
 	shutdownGrace = 10 * time.Second
@@ -57,7 +58,8 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	go reapExpiredLeases(ctx, q)
+	srv := server.New(ctx, q, reapInterval)
+	go srv.Leadership().Run(ctx)
 
 	addr := config.ListenAddr()
 	ln, err := net.Listen("tcp", addr)
@@ -66,7 +68,7 @@ func run() error {
 	}
 
 	grpcServer := grpc.NewServer()
-	pb.RegisterJobQueueServer(grpcServer, server.New(ctx, q))
+	pb.RegisterJobQueueServer(grpcServer, srv)
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -84,36 +86,9 @@ func run() error {
 
 	fmt.Println("\n[Server] Shutdown signal received...")
 	gracefulStop(grpcServer)
+	<-srv.Leadership().Stopped() // waits for the leadership handover
 	fmt.Println("[Server] System shutdown complete.")
 	return nil
-}
-
-// reapExpiredLeases is the whole of crash recovery: a worker that dies stops
-// renewing its lease, and the next sweep returns its job to the queue. There is
-// no separate boot-time recovery path — a restarted server sweeps before its
-// first tick, so it recovers whatever has already lapsed straight away and the
-// rest within one lease.
-func reapExpiredLeases(ctx context.Context, q *queue.Queue) {
-	ticker := time.NewTicker(reapInterval)
-	defer ticker.Stop()
-
-	for {
-		released, err := q.ReapExpiredLeases(ctx)
-		switch {
-		case err != nil && ctx.Err() != nil:
-			return // shutting down mid-sweep
-		case err != nil:
-			fmt.Fprintf(os.Stderr, "[Reaper] sweep failed: %v\n", err)
-		case released > 0:
-			fmt.Printf("[Reaper] reassigned %d job(s) whose lease expired\n", released)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
 }
 
 // gracefulStop drains in-flight RPCs, but not indefinitely: the stop is forced

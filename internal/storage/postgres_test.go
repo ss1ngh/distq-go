@@ -33,9 +33,14 @@ func testStore(t *testing.T) *PostgresStore {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	// Every test starts from an empty queue so the counts below mean something.
-	if _, err := store.db.Exec(`DELETE FROM jobs`); err != nil {
-		t.Fatalf("clear jobs: %v", err)
+	// Every test starts from an empty queue and a leaderless cluster so the
+	// counts below mean something. leadership is restored to its seed state:
+	// one row, no leader, term zero, lease long expired.
+	const reset = `DELETE FROM jobs;
+		DELETE FROM leadership;
+		INSERT INTO leadership (singleton) VALUES (TRUE);`
+	if _, err := store.db.Exec(reset); err != nil {
+		t.Fatalf("reset state: %v", err)
 	}
 	return store
 }
@@ -302,5 +307,103 @@ func expectLeaseLost(t *testing.T, what string, err error) {
 	t.Helper()
 	if !errors.Is(err, ErrLeaseLost) {
 		t.Errorf("%s by a worker that does not hold the lease = %v, want ErrLeaseLost", what, err)
+	}
+}
+
+// TestCampaignElectsExactlyOneLeader is the election guarantee: nodes racing to
+// take an expired lease must not all win, the term must advance once, and a
+// node that never won must not be able to renew somebody else's lease.
+func TestCampaignElectsExactlyOneLeader(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	const nodes = 6
+	var (
+		mu       sync.Mutex
+		wins     int
+		winnerID string
+		wg       sync.WaitGroup
+	)
+	for i := range nodes {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			term, won, err := store.Campaign(ctx, id, time.Minute)
+			if err != nil {
+				t.Errorf("%s: campaign: %v", id, err)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !won {
+				return
+			}
+			wins++
+			winnerID = id
+			if term != 1 {
+				t.Errorf("first term = %d, want 1", term)
+			}
+		}(fmt.Sprintf("node-%d", i))
+	}
+	wg.Wait()
+
+	if wins != 1 {
+		t.Errorf("%d nodes won leadership, want exactly 1", wins)
+	}
+
+	if _, leader, err := store.RenewLeadership(ctx, "node-outside", time.Minute); err != nil || leader {
+		t.Errorf("renew by a node that never won: leader=%v err=%v, want refused", leader, err)
+	}
+	if _, leader, err := store.RenewLeadership(ctx, winnerID, time.Minute); err != nil || !leader {
+		t.Errorf("renew by the leader was refused: leader=%v err=%v", leader, err)
+	}
+
+	// A clean resignation frees the lease at once, and the next handover
+	// advances the term so the two reigns are distinguishable.
+	if err := store.ResignLeadership(ctx, winnerID); err != nil {
+		t.Fatalf("resign: %v", err)
+	}
+	term, won, err := store.Campaign(ctx, "node-next", time.Minute)
+	if err != nil || !won {
+		t.Fatalf("campaign after resign: won=%v err=%v", won, err)
+	}
+	if term != 2 {
+		t.Errorf("term after one handover = %d, want 2", term)
+	}
+}
+
+// TestDeposedLeaderCannotResurrectItsLease is the split-brain primitive: a
+// leader that stalls past its lease is not quietly made leader again by its own
+// renewal. Getting back in means campaigning against everyone else.
+func TestDeposedLeaderCannotResurrectItsLease(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	term, won, err := store.Campaign(ctx, "old-leader", time.Minute)
+	if err != nil || !won {
+		t.Fatalf("campaign: won=%v err=%v", won, err)
+	}
+
+	// The leader stalls past its lease — the state a long GC pause or a
+	// network partition leaves behind.
+	if _, err := store.db.Exec(`UPDATE leadership SET lease_expires_at = 'epoch'`); err != nil {
+		t.Fatalf("expire lease: %v", err)
+	}
+	if _, leader, err := store.RenewLeadership(ctx, "old-leader", time.Minute); err != nil || leader {
+		t.Errorf("renew after expiry: leader=%v err=%v, want refusal", leader, err)
+	}
+
+	// A live node takes over, and the term advances.
+	newTerm, won, err := store.Campaign(ctx, "new-leader", time.Minute)
+	if err != nil || !won {
+		t.Fatalf("takeover campaign: won=%v err=%v", won, err)
+	}
+	if newTerm != term+1 {
+		t.Errorf("term after takeover = %d, want %d", newTerm, term+1)
+	}
+
+	// The zombie's renewal is still refused: leader_id no longer matches.
+	if _, leader, err := store.RenewLeadership(ctx, "old-leader", time.Minute); err != nil || leader {
+		t.Errorf("zombie renew after takeover: leader=%v err=%v, want refusal", leader, err)
 	}
 }

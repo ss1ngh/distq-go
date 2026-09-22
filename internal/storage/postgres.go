@@ -68,6 +68,24 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("migrate postgres schema: %w", err)
 	}
 
+	// leadership is the one row that says who may dispatch jobs and reap
+	// leases. The CHECK constraint keeps it a single row — there is one
+	// leadership, ever — and it starts with no leader and a lease long expired,
+	// so the very first Campaign wins immediately.
+	const leadershipSchema = `
+	CREATE TABLE IF NOT EXISTS leadership(
+		singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+		leader_id TEXT NOT NULL DEFAULT '',
+		term BIGINT NOT NULL DEFAULT 0,
+		lease_expires_at TIMESTAMP NOT NULL DEFAULT 'epoch'
+	);
+	INSERT INTO leadership (singleton) VALUES (TRUE) ON CONFLICT DO NOTHING;`
+
+	if _, err := db.Exec(leadershipSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create leadership table: %w", err)
+	}
+
 	return &PostgresStore{db: db}, nil
 }
 
@@ -266,6 +284,66 @@ func (s *PostgresStore) ReapExpiredLeases(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("rows affected: %w", err)
 	}
 	return released, nil
+}
+
+// Campaign elects a leader by taking an expired lease — the same discipline a
+// job claim uses, one level up. The WHERE is the whole election: the row can
+// only change hands while the current lease has lapsed, and the row lock the
+// UPDATE takes serialises competing campaigns, so of any number of nodes racing
+// to lead, exactly the first one wins.
+func (s *PostgresStore) Campaign(ctx context.Context, leaderID string, lease time.Duration) (int64, bool, error) {
+	var term int64
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE leadership
+		SET leader_id = $1,
+			term = term + 1,
+			lease_expires_at = CURRENT_TIMESTAMP + make_interval(secs => $2)
+		WHERE lease_expires_at < CURRENT_TIMESTAMP
+		RETURNING term`, leaderID, lease.Seconds()).Scan(&term)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil // somebody else holds a live lease
+		}
+		return 0, false, fmt.Errorf("campaign: %w", err)
+	}
+	return term, true, nil
+}
+
+// RenewLeadership is the leader's heartbeat: it extends its own lease and
+// learns whether it still holds it. The lease_expires_at guard is what keeps a
+// stalled leader from quietly resurrecting its own lease — past expiry the only
+// way back in is a fresh Campaign, contested like anybody else's. A deposed
+// leader gets false back, which is the definitive answer split-brain handling
+// needs before it dares dispatch again.
+func (s *PostgresStore) RenewLeadership(ctx context.Context, leaderID string, lease time.Duration) (int64, bool, error) {
+	var term int64
+	err := s.db.QueryRowContext(ctx, `
+		UPDATE leadership
+		SET lease_expires_at = CURRENT_TIMESTAMP + make_interval(secs => $2)
+		WHERE leader_id = $1 AND lease_expires_at >= CURRENT_TIMESTAMP
+		RETURNING term`, leaderID, lease.Seconds()).Scan(&term)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil // deposed, or the lease lapsed: either way it is gone
+		}
+		return 0, false, fmt.Errorf("renew leadership: %w", err)
+	}
+	return term, true, nil
+}
+
+// ResignLeadership hands leadership back immediately instead of making the
+// cluster wait out the lease: a clean shutdown hands over at once, a crash
+// costs the cluster exactly one lease. The term is not touched — it counts
+// campaign wins, and a resignation is not one.
+func (s *PostgresStore) ResignLeadership(ctx context.Context, leaderID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE leadership
+		SET leader_id = '', lease_expires_at = 'epoch'
+		WHERE leader_id = $1`, leaderID)
+	if err != nil {
+		return fmt.Errorf("resign leadership: %w", err)
+	}
+	return nil
 }
 
 func (s *PostgresStore) Close() error {

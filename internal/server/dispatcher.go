@@ -29,6 +29,12 @@ type dispatcher struct {
 	ctx context.Context
 	q   *queue.Queue
 
+	// mayDispatch is the leadership gate: only the cluster's leader hands out
+	// work. It is a function rather than a bool because the answer changes over
+	// a server's lifetime — every server runs one of these, and the losers must
+	// not dispatch.
+	mayDispatch func() bool
+
 	mu      sync.Mutex
 	waiters []*waiter
 	timer   *time.Timer
@@ -40,8 +46,8 @@ type waiter struct {
 	deliveries chan *pb.Assigned
 }
 
-func newDispatcher(ctx context.Context, q *queue.Queue) *dispatcher {
-	return &dispatcher{ctx: ctx, q: q}
+func newDispatcher(ctx context.Context, q *queue.Queue, mayDispatch func() bool) *dispatcher {
+	return &dispatcher{ctx: ctx, q: q, mayDispatch: mayDispatch}
 }
 
 // register notes that a worker is free and looks for work for it.
@@ -92,6 +98,14 @@ func (d *dispatcher) Push() {
 // pushLocked dequeues a job for each worker that is waiting, stopping as soon as
 // the queue has nothing visible left to hand out. Callers must hold d.mu.
 func (d *dispatcher) pushLocked() {
+	if !d.mayDispatch() {
+		// A follower holds nobody in line — its streams were never admitted —
+		// but a just-deposed leader may still be draining waiters. It stops
+		// handing out work here, and the leadership loop's wake on the next
+		// win picks the flow back up.
+		return
+	}
+
 	for len(d.waiters) > 0 {
 		w := d.waiters[0]
 
