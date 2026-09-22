@@ -25,6 +25,38 @@ func TestPostgresDSNComesFromTheEnvironment(t *testing.T) {
 	}
 }
 
+func TestServerAddrsParsesAClusterList(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want []string
+	}{
+		{name: "single", env: "queue.internal:4040", want: []string{"queue.internal:4040"}},
+		{name: "cluster", env: "a:4040, b:4040 ,c:4040", want: []string{"a:4040", "b:4040", "c:4040"}},
+		{name: "empty entries dropped", env: "a:4040,,b:4040,", want: []string{"a:4040", "b:4040"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(ServerAddrEnv, tc.env)
+			got := ServerAddrs()
+			if len(got) != len(tc.want) {
+				t.Fatalf("ServerAddrs() = %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("ServerAddrs()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+
+	t.Setenv(ServerAddrEnv, "")
+	if got := ServerAddrs(); len(got) != 1 || got[0] != defaultServerAddr {
+		t.Errorf("unset %s: got %q, want [%q]", ServerAddrEnv, got, defaultServerAddr)
+	}
+}
+
 func TestAddresses(t *testing.T) {
 	tests := []struct {
 		name       string

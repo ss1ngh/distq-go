@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -31,11 +32,18 @@ const (
 // longer owns the job: it is somebody else's to finish now.
 var errLeaseLost = errors.New("lease lost")
 
-// worker is one remote node: a single stream to the server, jobs pushed down it,
-// and one job handled at a time.
+// worker is one remote node: a stream to one queue server at a time, jobs pushed
+// down it, and one job handled at a time. conns holds one connection per known
+// server, so a stream that breaks can be re-opened on the next server without
+// dialing again.
 type worker struct {
-	id     string
-	client pb.JobQueueClient
+	id    string
+	conns []*grpc.ClientConn
+
+	// next indexes the connection the next stream is opened on. It stays put
+	// while the current server keeps answering and advances on a failure, so a
+	// worker parked on a healthy leader does not flap between servers.
+	next int
 
 	// A stream may only be sent on by one goroutine at a time, and a job's
 	// heartbeat and its result both send, so every send goes through send().
@@ -44,35 +52,45 @@ type worker struct {
 }
 
 func main() {
-	w := &worker{id: uuid.New().String()[:8], client: dial(config.ServerAddr())}
-	fmt.Printf("[Worker %s] Booting Distributed Node...\n", w.id)
+	addrs := config.ServerAddrs()
+	conns := make([]*grpc.ClientConn, len(addrs))
+	for i, addr := range addrs {
+		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[Worker] Fatal: could not dial %s: %v\n", addr, err)
+			os.Exit(1)
+		}
+		conns[i] = conn
+	}
+
+	w := &worker{id: uuid.New().String()[:8], conns: conns}
+	fmt.Printf("[Worker %s] Booting Distributed Node... (servers: %s)\n", w.id, strings.Join(addrs, ", "))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	for ctx.Err() == nil {
 		if err := w.run(ctx); err != nil && ctx.Err() == nil {
-			fmt.Printf("[Worker %s] Stream ended: %v\n", w.id, err)
+			fmt.Printf("[Worker %s] Stream to %s ended: %v\n", w.id, addrs[w.next%len(addrs)], err)
+			w.next++ // the next stream tries the following server
 		}
 		wait(ctx, reconnectDelay)
 	}
 	fmt.Println("[Worker] Engine shutdown complete.")
 }
 
-func dial(addr string) pb.JobQueueClient {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[Worker] Fatal: Failed to connect: %v\n", err)
-		os.Exit(1)
-	}
-	return pb.NewJobQueueClient(conn)
+// client returns the client for the server this worker is currently trying.
+// grpc.NewClient connects lazily and reconnects on its own, so one connection
+// per server lasts the worker's whole life.
+func (w *worker) client() pb.JobQueueClient {
+	return pb.NewJobQueueClient(w.conns[w.next%len(w.conns)])
 }
 
 // run opens a stream and serves jobs on it until the stream breaks. It is called
 // again for every reconnection, so it must leave no job half-reported: a job whose
 // stream dies loses only its lease, and the reaper hands it to somebody else.
 func (w *worker) run(ctx context.Context) error {
-	stream, err := w.client.JobStream(ctx)
+	stream, err := w.client().JobStream(ctx)
 	if err != nil {
 		return err
 	}

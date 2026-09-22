@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Environment variables the distq commands read.
@@ -41,8 +42,23 @@ func PostgresDSN() (string, error) {
 func ListenAddr() string { return envOr(ListenAddrEnv, defaultListenAddr) }
 
 // ServerAddr returns the address the worker, producer and fenceprobe dial to
-// reach the queue server.
-func ServerAddr() string { return envOr(ServerAddrEnv, defaultServerAddr) }
+// reach the queue server: the first of ServerAddrs, for the clients that only
+// ever talk to one.
+func ServerAddr() string { return ServerAddrs()[0] }
+
+// ServerAddrs returns the addresses a queue server can be reached on,
+// most-preferred first. A comma-separated DISTQ_SERVER_ADDR names a cluster:
+// the worker works down the list until it finds the leader.
+func ServerAddrs() []string {
+	parts := strings.Split(envOr(ServerAddrEnv, defaultServerAddr), ",")
+	addrs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if addr := strings.TrimSpace(part); addr != "" {
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs
+}
 
 func envOr(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
