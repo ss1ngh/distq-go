@@ -10,32 +10,29 @@ import (
 	"github.com/ss1ngh/distq-go/internal/queue"
 )
 
+// resignTimeout bounds the handover on shutdown: giving leadership up is not
+// worth holding the process open for.
+const resignTimeout = 5 * time.Second
+
 // Leadership elects and keeps exactly one server as the cluster's leader — the
 // only node that dispatches jobs and reaps expired leases. Every server runs
 // one; the losers stay out of policy work but keep serving Enqueue, which is a
 // plain database write and safe anywhere.
 //
-// The mechanism is a lease in Postgres, the same discipline a job claim uses,
-// one level up: win an expired lease with Campaign, keep it alive by renewing
-// every lease/3, and lose it by stalling past expiry. A deposed leader is not
-// told that it lost — it finds out the next time its renewal is refused — so
-// nothing here is trusted on its own word: dispatch checks Leading() before it
-// acts, worker streams die with the reign that admitted them, and the fencing
-// in the store's claims makes whatever slips through in the meantime harmless.
-// That double check is what "handling split-brain" reduces to: you cannot stop
-// two leaders from momentarily believing, so you make the deposed one's actions
-// refuse to land.
+// Who wins is an Election's business — a leased row in Postgres, or a leased key
+// in etcd — and whatever it decides is not taken on trust. A deposed leader is
+// not usually told that it lost: it finds out by losing the lease, and until it
+// does it still believes it leads. So dispatch checks Leading() before it acts,
+// worker streams die with the reign that admitted them, and the fencing in the
+// store's claims makes whatever slips through in the meantime refuse to land.
+// That is what "handling split-brain" reduces to: two leaders can momentarily
+// both believe, so the deposed one's actions are made harmless instead.
 type Leadership struct {
-	q        *queue.Queue
-	leaderID string
+	elect Election
+	q     *queue.Queue
 
-	lease time.Duration // how long a won leadership is good for
-	// campaignEvery is the renewal rhythm while leading and the retry cadence
-	// while campaigning; loseEvery is how long a deposed leader stands down
-	// before campaigning again, long enough for the takeover to settle.
-	campaignEvery time.Duration
-	loseEvery     time.Duration
-	reapEvery     time.Duration
+	// reapEvery is how often the leader sweeps expired job leases.
+	reapEvery time.Duration
 
 	mu      sync.Mutex
 	isLead  bool
@@ -46,107 +43,48 @@ type Leadership struct {
 	stopped chan struct{}
 }
 
-// NewLeadership prepares an idle — not yet leading — leadership loop. The lease
-// deliberately shares the job-lease duration: one knob to reason about, and the
-// renewal rhythm matches the worker heartbeat one.
-func NewLeadership(q *queue.Queue, leaderID string, lease, reapEvery time.Duration) *Leadership {
+// newLeadership prepares an idle — not yet leading — leadership loop around the
+// given election mechanism.
+func newLeadership(elect Election, q *queue.Queue, reapEvery time.Duration) *Leadership {
 	// Seed leadCtx already-cancelled, so a worker stream that asks before the
 	// first win is turned away instead of waiting on a channel nobody closes.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+
 	return &Leadership{
-		q:             q,
-		leaderID:      leaderID,
-		lease:         lease,
-		campaignEvery: lease / 3,
-		loseEvery:     lease / 2,
-		reapEvery:     reapEvery,
-		leadCtx:       ctx,
-		stopped:       make(chan struct{}),
+		elect:     elect,
+		q:         q,
+		reapEvery: reapEvery,
+		leadCtx:   ctx,
+		stopped:   make(chan struct{}),
 	}
 }
 
-// Run campaigns until this node wins leadership, then holds it — renewing the
-// lease and reaping expired job leases — until the process shuts down or a
-// renewal comes back refused. It returns once this node has stopped leading.
+// Run campaigns until this node wins leadership, then holds it until the process
+// shuts down or the lease is lost, reaping expired job leases throughout. It
+// returns once this node has stopped leading.
 func (l *Leadership) Run(ctx context.Context) {
 	defer close(l.stopped)
 	defer l.resign()
 
 	for ctx.Err() == nil {
-		term, won := l.campaign(ctx)
-		if !won {
-			return // shutting down before ever winning
+		term, err := l.elect.Campaign(ctx)
+		if err != nil {
+			return // the context ended; there is nothing left to campaign for
 		}
-		fmt.Printf("[Leadership] node %s won term %d — dispatching and reaping here\n", l.leaderID, term)
+		fmt.Printf("[Leadership] node %s won term %d — dispatching and reaping here\n", l.elect.Name(), term)
 		l.becomeLead(term)
 		go l.reapExpiredLeases(l.LeadCtx())
 
-		if l.holdUntilDeposedOrShutdown(ctx) {
-			return // shutting down; resign runs via defer
+		if !l.elect.Hold(ctx) {
+			return // shutting down; resignation runs via defer
 		}
 
-		// Deposed: stand down, let the takeover settle, and campaign again
-		// like everybody else. Dropping the streams has already sent this
-		// node's workers hunting for the new leader.
+		// Deposed. Dropping the streams has already sent this node's workers
+		// hunting for the new leader, and campaigning again is safe immediately:
+		// a candidate queues behind the new incumbent rather than fighting it.
 		l.demote()
-		fmt.Printf("[Leadership] node %s demoted — campaigning again in %s\n", l.leaderID, l.loseEvery)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(l.loseEvery):
-		}
-	}
-}
-
-// campaign retries until the lease is won or the process is shutting down. The
-// database being down is not a reason to die: nothing here holds state, so
-// retrying is always safe.
-func (l *Leadership) campaign(ctx context.Context) (int64, bool) {
-	for {
-		term, won, err := l.q.Campaign(ctx, l.leaderID, l.lease)
-		if err == nil && won {
-			return term, true
-		}
-		if ctx.Err() != nil {
-			return 0, false
-		}
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[Leadership] campaign failed, retrying: %v\n", err)
-		}
-
-		select {
-		case <-ctx.Done():
-			return 0, false
-		case <-time.After(l.campaignEvery):
-		}
-	}
-}
-
-// holdUntilDeposedOrShutdown renews the leadership lease until it is refused —
-// somebody else took over — or the process shuts down, and reports which. A
-// failed renewal is not proof of deposition (the database may just be
-// unreachable), so it is logged and survived: the lease lapses, somebody
-// campaigns, and the next renewal settles the question.
-func (l *Leadership) holdUntilDeposedOrShutdown(ctx context.Context) bool {
-	ticker := time.NewTicker(l.campaignEvery)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return true
-		case <-ticker.C:
-			_, leader, err := l.q.RenewLeadership(ctx, l.leaderID, l.lease)
-			switch {
-			case ctx.Err() != nil:
-				return true
-			case err != nil:
-				fmt.Fprintf(os.Stderr, "[Leadership] renewal failed: %v\n", err)
-			case !leader:
-				return false
-			}
-		}
+		fmt.Printf("[Leadership] node %s demoted — campaigning again\n", l.elect.Name())
 	}
 }
 
@@ -161,9 +99,9 @@ func (l *Leadership) becomeLead(term int64) {
 }
 
 // demote ends the current reign: the leadership context is cancelled, which
-// stops the reaper and drops every worker stream admitted under it. The term
-// is deliberately kept — the fencing tokens already stamped into claims were
-// real, and Term() is not used to decide anything about the future.
+// stops the reaper and drops every worker stream admitted under it. The term is
+// deliberately kept — the fencing tokens already stamped into claims were real,
+// and Term() is not used to decide anything about the future.
 func (l *Leadership) demote() {
 	l.mu.Lock()
 	cancel := l.cancel
@@ -175,9 +113,9 @@ func (l *Leadership) demote() {
 	}
 }
 
-// Leading reports whether this node currently believes it leads. It is the
-// cheap first check a leadership-gated action makes; the authoritative one is
-// the renewal coming back refused.
+// Leading reports whether this node currently believes it leads. It is the cheap
+// first check a leadership-gated action makes; the authoritative one is the
+// election saying the lease is gone.
 func (l *Leadership) Leading() bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -193,8 +131,8 @@ func (l *Leadership) LeadCtx() context.Context {
 }
 
 // Term is the leadership term this node won, zero while it leads nobody. It is
-// the fencing token stamped into every claim and sweep, so a claim by a
-// deposed leader — whose term is behind the row's — refuses to land.
+// the fencing token stamped into every claim and sweep, so a claim by a deposed
+// leader — whose term is behind the row's — refuses to land.
 func (l *Leadership) Term() int64 {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -204,17 +142,20 @@ func (l *Leadership) Term() int64 {
 // Stopped is closed once Run has returned and resignation has been attempted.
 func (l *Leadership) Stopped() <-chan struct{} { return l.stopped }
 
-// resign gives the lease back so a clean restart does not cost the cluster a
-// lease period with nobody leading. It is safe no matter the state — the SQL
-// only clears leadership if this node still holds it — and a crash costs the
-// cluster exactly one lease instead.
+// resign hands leadership over so a clean restart does not cost the cluster a
+// lease period with nobody leading. There is nothing to hand over if this node
+// never led, or lost the lease before it stopped.
 func (l *Leadership) resign() {
+	wasLeading := l.Leading()
 	l.demote()
+	if !wasLeading {
+		return
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), resignTimeout)
 	defer cancel()
 
-	if err := l.q.ResignLeadership(ctx, l.leaderID); err != nil {
+	if err := l.elect.Resign(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[Leadership] resign: %v\n", err)
 		return
 	}

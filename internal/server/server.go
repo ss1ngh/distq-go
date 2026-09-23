@@ -24,12 +24,12 @@ type Server struct {
 	ctx context.Context
 }
 
-// New initializes a server backed by the given queue. The context bounds the
-// work the server does on its own behalf, such as the dispatcher's timer for a
-// job that is not due yet. reapEvery is how often the leader — once elected —
-// sweeps expired job leases.
-func New(ctx context.Context, q *queue.Queue, reapEvery time.Duration) *Server {
-	lead := NewLeadership(q, uuid.New().String()[:8], q.LeaseFor(), reapEvery)
+// New initializes a server backed by the given queue, led through the given
+// election mechanism. The context bounds the work the server does on its own
+// behalf, such as the dispatcher's timer for a job that is not due yet.
+// reapEvery is how often the leader — once elected — sweeps expired job leases.
+func New(ctx context.Context, q *queue.Queue, elect Election, reapEvery time.Duration) *Server {
+	lead := newLeadership(elect, q, reapEvery)
 	dis := newDispatcher(ctx, q, lead)
 
 	return &Server{q: q, dis: dis, lead: lead, ctx: ctx}

@@ -18,6 +18,9 @@ const (
 	ListenAddrEnv = "DISTQ_LISTEN_ADDR"
 	// ServerAddrEnv names the address the client commands dial.
 	ServerAddrEnv = "DISTQ_SERVER_ADDR"
+	// EtcdEndpointsEnv names the etcd endpoints that elect leadership. Naming
+	// them moves the election out of the database and into etcd.
+	EtcdEndpointsEnv = "DISTQ_ETCD_ENDPOINTS"
 )
 
 // Defaults for the two addresses. Neither is a secret, so both are safe to
@@ -49,15 +52,25 @@ func ServerAddr() string { return ServerAddrs()[0] }
 // ServerAddrs returns the addresses a queue server can be reached on,
 // most-preferred first. A comma-separated DISTQ_SERVER_ADDR names a cluster:
 // the worker works down the list until it finds the leader.
-func ServerAddrs() []string {
-	parts := strings.Split(envOr(ServerAddrEnv, defaultServerAddr), ",")
-	addrs := make([]string, 0, len(parts))
+func ServerAddrs() []string { return splitList(envOr(ServerAddrEnv, defaultServerAddr)) }
+
+// EtcdEndpoints returns the etcd endpoints leadership is elected through, empty
+// when this cluster does not use etcd. Presence is the switch: saying where the
+// etcd cluster is says where the election should be too, so there is no second
+// setting that could contradict it.
+func EtcdEndpoints() []string { return splitList(os.Getenv(EtcdEndpointsEnv)) }
+
+// splitList parses the comma-separated form the list-valued settings use,
+// ignoring empty entries so a trailing comma is harmless.
+func splitList(value string) []string {
+	parts := strings.Split(value, ",")
+	items := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if addr := strings.TrimSpace(part); addr != "" {
-			addrs = append(addrs, addr)
+		if item := strings.TrimSpace(part); item != "" {
+			items = append(items, item)
 		}
 	}
-	return addrs
+	return items
 }
 
 func envOr(name, fallback string) string {

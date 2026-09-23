@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -55,10 +56,16 @@ func run() error {
 		return fmt.Errorf("failed to create queue: %w", err)
 	}
 
+	elect, err := newElection(q, leaseFor)
+	if err != nil {
+		return err
+	}
+	defer elect.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(ctx, q, reapInterval)
+	srv := server.New(ctx, q, elect, reapInterval)
 	go srv.Leadership().Run(ctx)
 
 	addr := config.ListenAddr()
@@ -89,6 +96,31 @@ func run() error {
 	<-srv.Leadership().Stopped() // waits for the leadership handover
 	fmt.Println("[Server] System shutdown complete.")
 	return nil
+}
+
+// newElection picks the mechanism that decides which server leads: etcd when a
+// cluster is named, the store's own lease row otherwise. The choice is announced
+// at startup rather than inferred later, because it changes what has to be
+// running for leadership to work at all.
+//
+// The two are not interchangeable on a live cluster. A term only means "later
+// than" the terms of the same mechanism, and etcd numbers reigns from its store
+// revision while Postgres counts them up from one, so switching back to Postgres
+// under a cluster that has elected in etcd leaves the newer claims unfenced and
+// unsweepable. Drain the queue before changing this.
+func newElection(q *queue.Queue, lease time.Duration) (server.Election, error) {
+	endpoints := config.EtcdEndpoints()
+	if len(endpoints) == 0 {
+		fmt.Println("[Server] Leadership: leasing a row in Postgres")
+		return server.NewPostgresElection(q, lease), nil
+	}
+
+	elect, err := server.NewEtcdElection(endpoints, lease)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("[Server] Leadership: leasing a key in etcd at %s\n", strings.Join(endpoints, ","))
+	return elect, nil
 }
 
 // gracefulStop drains in-flight RPCs, but not indefinitely: the stop is forced

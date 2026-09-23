@@ -57,6 +57,28 @@ func TestServerAddrsParsesAClusterList(t *testing.T) {
 	}
 }
 
+// EtcdEndpoints is the switch between electing leadership in etcd and electing
+// it in the database, so unset has to mean empty rather than some endpoint that
+// was never configured — every cluster without etcd would otherwise dial one.
+func TestEtcdEndpointsSelectTheElectionMechanism(t *testing.T) {
+	t.Setenv(EtcdEndpointsEnv, "")
+	if got := EtcdEndpoints(); len(got) != 0 {
+		t.Errorf("unset %s: got %q, want none so the database elects", EtcdEndpointsEnv, got)
+	}
+
+	t.Setenv(EtcdEndpointsEnv, "http://etcd-1:2379, http://etcd-2:2379 ,")
+	want := []string{"http://etcd-1:2379", "http://etcd-2:2379"}
+	got := EtcdEndpoints()
+	if len(got) != len(want) {
+		t.Fatalf("EtcdEndpoints() = %q, want %q", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("EtcdEndpoints()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestAddresses(t *testing.T) {
 	tests := []struct {
 		name       string
